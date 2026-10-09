@@ -1,0 +1,25 @@
+cest-gui —— 以后就在这里开发，这里也是交付包
+================================================================================
+
+1) 改代码
+   · 壳（界面/各模块）   cest-gui\CEST_Studio\
+   · 核心层（算法）      cest-gui\03_Python_全链路\函数库\
+   改完 → 双击 cest-gui\启动 CEST Studio.vbs 立即生效（记得关掉窗口重开）。
+   外面那份 频率重要性通用\CEST_Studio 已经冻结，不要再动。
+
+2) 不要动
+   · runtime\   （便携 Python + 全部依赖，坏了要重做）
+   · 别把输出数据放进 cest-gui（结果放你自己的 PROJ 目录）
+
+3) 要发给别人
+   双击 cest-gui\_dev\导出干净交付包.bat
+       → 输出到 桌面\cest-gui（自动去掉 _dev / logs / 缓存，重置 settings.json）
+       → 把那个文件夹整个拷给对方，对方双击「启动 CEST Studio.vbs」即用
+
+4) 排错
+   · 双击 启动 CEST Studio（调试）.bat（带控制台）
+   · 无窗口时看日志：cest-gui\CEST_Studio\logs\gui_<日期>.log
+
+5) 其它
+   _dev\ 里是工具/备份/测试记录/交接文档，跟使用无关，不用管、发包也不用带。
+   详细版说明在 _dev\开发与交付说明.txt 和 _dev\工作交接说明.txt。

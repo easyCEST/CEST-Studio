@@ -1,0 +1,45 @@
+CEST Studio（免安装版）  ——  2026-10-02 17:45
+==============================================================================
+
+【怎么用（本机 / 换电脑都一样）】
+  1. 把整个 cest-gui 文件夹拷到目标电脑（U 盘/网盘都行，500 MB 左右）。
+     目录名、盘符都可以随便改，只要 CEST_Studio / 03_Python_全链路 / runtime
+     三个子文件夹和两个启动脚本在同一个层级里。
+  2. 双击  启动 CEST Studio.vbs           ← 平时用这个（无黑窗口）
+     排错用 启动 CEST Studio（调试）.bat    ← 会留一个控制台，能看到报错
+  3. 首次用法：
+     · 顶部「输出总目录(PROJ)」选一个你自己的空文件夹（结果都往它下面生成
+       00_掩模 / 01_重建 / 02_展示 / 04_逐体素LD / 日志）。
+     · ① DICOM 重建：把原始 DICOM 目录拖进左上角 → 识别 → 开始。
+     · ⑧ 去噪掩模 → ④ 逐体素LD → ② 多层图谱展示：这三页的输入默认就是上面那个 PROJ，
+       不用再选；右栏会显示「病例 · 数据 · 掩模」解析结果，缺什么会红字提示。
+
+【不需要做什么】
+  · 不用装 Python，不用联网，不用 pip install —— 依赖在 runtime\ 里。
+  · 不用配 PATH / 环境变量。
+
+【要求】
+  · Windows 10 / 11，64 位（x64）。不支持 32 位系统或 ARM Windows。
+  · 首次启动会慢几秒（Qt 初始化）。
+
+【目录说明】
+  runtime\                   便携 Python 3.10 + PySide6/numpy/scipy/matplotlib/
+                              pydicom/h5py 等依赖。别改、别删。
+  CEST_Studio\               壳（界面 + 各模块编排）。可以看/改。
+  03_Python_全链路\函数库\    算法核心层（9 个 .py，纯计算）。★ 不要改。
+  启动 CEST Studio.vbs        ← 双击这个
+  启动 CEST Studio（调试）.bat
+  _dev\                      打包工具 + 旧交付包，跟使用无关，可以整个删掉。
+
+【出问题看哪里】
+  · 无窗口启动时，所有输出（含报错）落在
+        CEST_Studio\logs\gui_<日期>.log
+  · 每次运行的详细日志：<PROJ>\日志\<模块>_<时间戳>.log
+  · 界面起不来 → 先用「启动 CEST Studio（调试）.bat」看控制台报错。
+
+【版本】
+  Python 3.10.10    PySide6 6.11.2   numpy 2.2.6   scipy 1.15.3
+  matplotlib 3.10.9 pydicom 3.0.2     h5py 3.16.0
+  核心层 md5：cest_display 5c12e907  cest_io f0e94e7c  cest_ld 64ff3bce  cest_post 58ae4a9e  cest_recon 4cb517fa  dicom_order 585e046d  prf_analysis 554371d3  prf_extract cd8a5c2b  run_log 0b06b18d
+  打包时间：2026-10-02 17:45（壳 45 个文件 / 核心层 9 个）
+==============================================================================
