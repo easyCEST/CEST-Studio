@@ -83,9 +83,52 @@ def _normalize_roi(roi, nxy):
 # ===========================================================================
 # 二、底层：目录 → 特征矩阵
 # ===========================================================================
+def _layer_of_dir(p):
+    """从 .../sliceN/... 目录名里抠出 1-based 层号；抠不到 → None。"""
+    for part in reversed(str(p).replace('\\', '/').split('/')):
+        m = re.fullmatch(r'slice[ _-]?(\d+)', part.strip(), re.I)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _roi_at_layer(roi_file, nxy, layer, var_roi=VAR_ROI):
+    """取 ROI 列表（0-based 线性索引，口径同 _normalize_roi）。
+
+    若 ROI 文件里有 ROI_total_layers（⑧ 逐层画过）且给了 layer（1-based）：
+    每个 ROI 优先用该层单独画的那张；该 ROI 是 2D 共用的 → 回退到 ROI_total；
+    该层确实没画（哨兵 -1）→ 空数组（上层按「本层该 ROI 0 体素」处理）。
+    """
+    raw = load_first(roi_file, var_roi) if roi_file else None
+    base = _normalize_roi(raw, nxy)
+    if roi_file is None or layer is None:
+        return base
+    per = load_first(roi_file, ('ROI_total_layers',))
+    if per is None:
+        return base
+    outer = np.asarray(per, dtype=object).reshape(-1)
+    if outer.size != len(base):
+        return base
+    z = int(layer) - 1
+    out = []
+    for k, cel in enumerate(outer):
+        inner = np.asarray(cel, dtype=object).reshape(-1)
+        if inner.size == 0 or not (0 <= z < inner.size):
+            out.append(base[k])                             # 2D 共用 → 回退
+            continue
+        e = np.rint(np.asarray(inner[z]).ravel()).astype(np.int64)
+        if e.size == 1 and e[0] == -1:
+            out.append(np.array([], dtype=np.int64))        # 该层确实没有
+        elif e.size:
+            out.append(np.maximum(e - 1, -1))               # 1-based → 0-based
+        else:
+            out.append(base[k])
+    return out
+
+
 def load_features(src_dirs, norm=0, roi_idx=None, roi_dir=None, epsilon=1e-8,
                   verbose=True, var_data=VAR_DATA, var_s0=VAR_S0,
-                  var_roi=VAR_ROI, var_w=VAR_W):
+                  var_roi=VAR_ROI, var_w=VAR_W, layer=None):
     """
     从 slice 目录提取「体素 × 频偏」特征矩阵。
 
@@ -95,6 +138,8 @@ def load_features(src_dirs, norm=0, roi_idx=None, roi_dir=None, epsilon=1e-8,
     norm     : 0 = 直接取原始信号（默认）；1 = 除以 S0 + epsilon
     roi_idx  : 用哪几个 ROI（**1 开始**）。None = 全部；1 = 只取 ROI 1
     roi_dir  : ROI 与数据不同目录时指定（可为列表，与 src_dirs 对应）
+    layer    : 1-based 层号。None（默认）= 按每个 src_dir 的 sliceN 名自动认层；
+               ⑧ 逐层画过 ROI 时各层取自己那张（缺层回退 2D 共用）
 
     Returns
     -------
@@ -165,7 +210,9 @@ def load_features(src_dirs, norm=0, roi_idx=None, roi_dir=None, epsilon=1e-8,
             roi_file = ff['roi']
         else:
             roi_file = find_files(rdir, verbose=False)['roi']
-        roi_list = _normalize_roi(load_first(roi_file, var_roi) if roi_file else None, nxy)
+        roi_list = _roi_at_layer(roi_file, nxy,
+                                 layer if layer is not None else _layer_of_dir(d),
+                                 var_roi=var_roi)
 
         if roi_idx is None:
             sel = list(range(1, len(roi_list) + 1))

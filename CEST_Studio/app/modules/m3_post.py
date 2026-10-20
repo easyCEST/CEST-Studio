@@ -643,7 +643,7 @@ class PostModule(Module):
                                       (np.asarray(V_as_mask, float) if save_vas else None),
                                       w_out, x_as, roi_file, roi_out,
                                       cfg=dict(trim=True, negorpos=negorpos, dpi=120),
-                                      log=lambda _s: None)
+                                      log=lambda _s: None, layer=s)
                         roi_curve_dirs.append(str(roi_out))
                         ctx.log(f'   slice {s:2d} | ROI 定量曲线 → {roi_out.name}/')
                     except Exception as er:                            # noqa: BLE001

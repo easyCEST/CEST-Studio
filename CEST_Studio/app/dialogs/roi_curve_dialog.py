@@ -198,9 +198,13 @@ class RoiCurveDialog(QDialog):
         self.lst_layers.setCurrentRow(0)
         try:
             rois = CR.load_roi_total(d['roi_file'])
+            _lay = CR.load_roi_layers(d['roi_file'])
             self.lst_rois.clear()
             for k, r in enumerate(rois):
-                it = QListWidgetItem(f'ROI{k + 1}（{np.asarray(r).size} 体素）')
+                _note = ''
+                if _lay is not None and k < len(_lay) and _lay[k]:
+                    _note = '（逐层，本层实际会再算）'
+                it = QListWidgetItem(f'ROI{k + 1}（{np.asarray(r).size} 体素）{_note}')
                 it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
                 it.setCheckState(Qt.Checked)
                 self.lst_rois.addItem(it)
@@ -268,8 +272,9 @@ class RoiCurveDialog(QDialog):
                 xa = np.asarray(load_first(fx, ('x_as',)), float).ravel()
             else:
                 va = None
+        # layer = 1-based 层号：⑧ 逐层画过 ROI 时，本层各取自己那张（缺层回退 2D 共用）
         return CR.run_curves(z, va, w, xa, self.data['roi_file'], cfg['out'],
-                             cfg, log=lambda s: None, progress=None)
+                             cfg, log=lambda s: None, progress=None, layer=layer)
 
     # ================================================================== 画
     def _on_layer_row(self, row):

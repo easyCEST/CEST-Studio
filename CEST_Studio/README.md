@@ -320,6 +320,8 @@ MATLAB `GenerateThmask.m` 先把 SNR 掩模写进 `Thmask.mat`，之后**不再�
   - `Z 原始（APT）` = `roi_display_mode 1`（默认）
   - `1−Z（ST）` = `roi_display_mode 2`（**先 1−Z、再乘掩模**，与 MATLAB 一致）
 - **明确不做 mode 0（S0 底图）**；显示模式只影响观感，不改 ROI 几何与索引值
+- 「**★ 全层平均**」行 = 该底图的 20 层平均 → 画出来就是 **2D 全层共用**（同 MATLAB `roipoly` 口径）；
+  左栏点**某一层** = 该层的 Z 图 → 勾「**本层单独保存**」就能**逐层单独画**（器官 ROI 现在也支持，见下「逐层 ROI」）
 
 **前置门禁**：画 ROI 必须先有去噪掩模。没有 → 拦下提示。
 打开画布时会自动把 `00_掩模\<病例>\` 里现成的 `liverMask.mat` / `snrMask.mat` 当底稿带进来
@@ -331,12 +333,14 @@ MATLAB `GenerateThmask.m` 先把 SNR 掩模写进 `Thmask.mat`，之后**不再�
    → 点【打开掩模画布…】（或【重新画 ROI…】）；
    画布里「掩模对象」组也有 `ROI 数量` +【应用】，改完立刻增删 ROI1…ROIn（不用关画布）；
 2. 右边「掩模对象」列表里会多出 `ROI1…ROIn`（颜色循环）；
-3. 目标切到 ROI1 → 底图自动切「ROI 底图：Z 层均 × 掩模」、色图自动 jet（首行黑）；
+3. 目标切到 ROI1 → 底图自动切「ROI 底图：Z × 掩模」、色图自动 jet（首行黑）；
    还想看 ST 就把「底图」组里的 `ROI 显示` 切到 `1−Z（ST）`（色标会自动按新图重算）；
+   停「★ 全层平均」→ 底图是 20 层平均；点某一层 → 底图切成**该层的 Z 图**；
 4. 交互与画掩模完全一样：多边形（左键加点、**双击确定**、右键/Backspace 撤点）、矩形、画笔、橡皮；
    「选择/拖动」下拖顶点 / 整体挪 / 右键顶点删点；撤销 30 步；
 5. **色标边画边调**：上限/下限两个框 + 【自动(95%分位)】按钮，改一下实时刷新（只影响观感）；
 6. 逐个画（MATLAB：`Please select ROI1 now>>>` → ROI2 → …）→ 【确定】→ ⑧ 页【开始】落盘；
+   要**逐层**画：先停「★ 全层平均」画一张（= 2D 共用），再点某一层、勾「本层单独保存」微调；
 7. 画完重开画布还能接着拖（多边形/笔迹都回传，ROI 也一样）。
 
 **复用 vs 重画**
@@ -349,14 +353,20 @@ MATLAB `GenerateThmask.m` 先把 SNR 掩模写进 `Thmask.mat`，之后**不再�
 | 文件 | 变量 | 内容 |
 |---|---|---|
 | `ROI<k>.mat` | `ROI` | 该 ROI 的 (X,Y) 0/1（与 MATLAB 同名同变量） |
-| `ROI_total.mat` | `ROI_total` | `cell(nROI,1)`；元素 = **1-based 列优先**线性索引，**升序**（= MATLAB `find`） |
+| `ROI_total.mat` | `ROI_total` | `cell(nROI,1)`；元素 = **1-based 列优先**线性索引，**升序**（= MATLAB `find`）。2D ROI = 该张 ∩ 掩模；逐层 ROI = **各层并集** ∩ 掩模（老工具/不传 layer 的兜底） |
+| `ROI_total.mat` | `ROI_total_layers` | **只有存在逐层 ROI 时才写**：`cell(nROI,1)`，元素 = `cell(1,层数)`；`{k}{z}` = 第 k 个 ROI 在第 z 层的 1-based 索引列向量。**2D 的 ROI → 空 `[]`（读回时回退 `ROI_total`）；该层确实没画 → 单个 `-1` 哨兵** |
 | `roi_meta.json` | — | 并入掩模 meta：新增 `roi` 段（nROI/模式/体素数/首值/最大值/ppm/显示模式/色标/时间） |
 | `mask_check.png` | — | 有 ROI 时多一格「④ 器官 ROI」（各 ROI 边界不同颜色） |
 
 - 与去噪掩模**求交**：`idx = ROI ∩ Thmask`（= MATLAB `find(ROI .* Thmask)`）；交集为空 → 报错请重画；
 - 覆盖前自动备份 `<名>.bak_<时间戳>.mat`；
 - 打包用核心层 `cest_post._cell_of_arrays`，复用 `points_to_mask`（画多边形→掩模）、
-  `roi_plot_song`（「有 ROI_total 就复用」那条分支）、`savemat`——**核心层一行未改**。
+  `roi_plot_song`（「有 ROI_total 就复用」那条分支）、`savemat`。核心层只动了 **3 个文件**：
+  `cest_roi.load_roi_total(path, layer=None)` + 新增 `load_roi_layers(path)`、
+  `cest_roi.run_curves(..., layer=None)`、`prf_extract.load_features(..., layer=None)`
+  （+ 内部 `_layer_of_dir` / `_roi_at_layer`）—— 都是「加可选参数、默认行为不变」；
+  另 `cest_post.roi_plot_song` 复用外部 `ROI_total.mat` 时**顺手把 `ROI_total_layers` 一起拷过去**
+  （原来只拷 `ROI_total`，会把逐层表丢掉）。
 
 **验收（实测 2026-10-02）**
 
@@ -374,6 +384,25 @@ MATLAB `GenerateThmask.m` 先把 SNR 掩模写进 `Thmask.mat`，之后**不再�
 
 口径要点：MATLAB `find` 返回的是**列优先升序**，所以本模块把索引按升序排，
 这样存出来的 `ROI_total.mat` 与 MATLAB **逐位一致**（不是只「集合一致」）。
+
+**逐层 ROI（3D，可选；不动 2D 时代的任何口径）**
+
+不同层器官形状不一样（小肠 / 肾 / 肝）时，一张 2D ROI 套不下，就逐层画。
+
+- **怎么出 2D / 3D**
+  - 停「★ 全层平均」上画 → 全层共用一张 → 产物**仍是 2D**（与 MATLAB `roipoly` 逐位一致，8583/9291 那套验收不变）；
+  - 停**某一层** + 勾「**本层单独保存**」→ 只改这一层 → `ROI<k>.mat` 出 **3D `(X,Y,层)`**，
+    同时写出 `ROI_total_layers`；没勾的层 = 回退到 2D 共用那张。
+  - 该勾选框对器官 ROI 现在**可用**（旧版对 ROI 灰掉、强制 2D）。
+- **下游按层取**
+  - ③：`cest_roi.load_roi_total(path, layer=n)`；`roi_curve_dialog` 逐层调 `run_curves(..., layer=n)`。
+    该层没画到某个 ROI → 该 ROI 本层**跳过**（段日志里 `[跳过]`）；本层一个都没有 → 直接拦下报错。
+  - ⑤：`prf_extract.load_features(..., layer=None)` 默认**按每个 src_dir 名里的 `sliceN` 自动认层**；
+    ROI 文件带 `ROI_total_layers` 就取该层，缺层回退 2D。
+  - **不传 `layer` / 文件是纯 2D → 与改动前完全一致**（回归：`validate_roi --reproduce` 仍逐位一致）。
+- **`ROI_total_layers` 读法**（`cest_roi.load_roi_layers`）：空数组 = 该 ROI 是 2D（回退 `ROI_total[k]`）；
+  `[-1]` = 该层确实没有；否则就是该层索引（已转 0-based）。
+- 自检：`python CEST_Studio\tools\validate_roi_layers.py`（36 项：落盘→读回、③ 取层、⑤ 认层、画布 3D 往返）。
 
 ---
 
@@ -687,6 +716,7 @@ CEST_Studio\
 │   ├─ widgets\                drop_zone / log_panel / recon_plan（① 的序列·频率面板）
 │   │                          mask_canvas（⑧ 画布控件 SliceCanvas / MaskTarget / MaskCanvasPanel）
 │   │                          autosize（fit_label：自动换行状态标签的高度自适应）
+│                          flow_layout（FlowLayout / FlowWidget：窄了自动折行的容器，数据链按钮用）
 │   ├─ dialogs\freq_dialog.py  频率表对话框（检索/继承/载入/预设/手动 + 校验 + 确认）
 │   ├─ dialogs\browse_dialog.py 目录预览（双击进入 / 勾选序列 / 补齐同组 / 分析维度）
 │   ├─ dialogs\mask_canvas_dialog.py  ★ ⑧ 去噪掩模 + 器官 ROI 画布（层览/勾画/SNR/ROI底图/色标/导出）
@@ -752,6 +782,12 @@ CEST_Studio\
   不会出现「必须左右滑才能看全」的情况（ROI 下拉框、色标上下限、SNR 按钮都完整可见）。
 - **两类 ROI 不要混**：② 用**去噪/背景掩模** `00_掩模\<病例>\Mask.mat`（去背景）；
   ③ 后处理用**器官 ROI** `00_掩模\<病例>\ROI_total.mat`（⑧ 已做：同目录的 `ROI_total.mat` / `ROI<k>.mat`）。
+- **分隔条不能拖到没有**：每页「左栏|右栏」与「导航|页面」两处 splitter 都设了 `setChildrenCollapsible(False)` + `setCollapsible(0/1, False)`，两侧都不再能被折成 0 宽（最小 左 196 / 右 320）；数据链按钮改折行布局（`app\widgets\flow_layout.py`），窄窗口也排得下。
+- **竖向分隔条（上下可拖，2026-10-20）**：只给「值得的」页装，其余页维持原样堆叠。
+  左栏「参数区↔输出与运行」：③④⑤⑥②⑧（`m3_post/m4_ld/m5_prf/m6_prf_analysis/m2_display/m_roi`）；
+  右栏「结果↔预览」：②④⑥⑧（`m2_display/m4_ld/m6_prf_analysis/m_roi`，这些页 `preview_image()` 才真出图）；
+  ⓪①③⑤⑦ 预览区恒为空占位、①⓪⑦ 参数少，都不装。主窗口「导航|页面↔全局日志」也改成竖分隔条。
+  实现：`base_page.py` 顶部 `VS_LEFT`/`VS_RIGHT` 两个 id 元组 + `_build()` 里条件套 `QSplitter(Vertical)`（`vsplitLeft`/`vsplitRight`；初值 左栏 `[620,230]`、右栏 `[280,420]`，日志 `[620,130]`），日志原来那句 `log_panel.setMaximumHeight(130)` 已删；`theme.py` 补了 `QSplitter::handle:vertical{height:8px}` 与 `:hover` 着色（否则竖向把手看不见）。所有竖条同样 `childrenCollapsible=False` + 两侧不可折叠。
 - **② 的 LD 图**：先把 ④ 逐体素LD 跑出来（`PROJ\04_逐体素LD\<病例>\voxel_LD.mat`），② 选 LD 就能出。
 - **④ 的拟合参数全在 GUI**：`Field(advanced=True, group='…')` 的参数不占主表单，统一进【高级参数…】
   （`app\dialogs\params_dialog.py`，编辑的是页面同一批控件 → `settings.json` / 运行天然一致）。
@@ -819,3 +855,55 @@ CEST_Studio\
   被用户打断的工具调用不会杀死 `Start-Process` 起的子进程，记得清理。
 
 ---
+
+
+## 七之二、版本号与「一键更新」（2026-10-15）
+
+- 版本号就一行，在 `CEST_Studio\VERSION`（如 `1.0.1`）。启动时读进**窗口标题**
+  和日志第一行（`CEST Studio 已启动。（v1.0.1）`）——用户报版本念这一句就够。
+- 交付分两种：
+  * **完整免安装包**（约 470 MB，带 `runtime\`）：只在首次安装、或运行环境 / 依赖变了时才发。
+  * **代码更新包**（约 0.3 MB，`CEST-Studio-更新-vX.Y.Z.zip`）：平时改 .py / 文档就发这个。
+- 怎么生成：双击 `_dev\导出代码更新包.bat`（即 `导出代码更新包.py`）。版本号默认自动 +1；
+  也支持 `--version 1.1.0` / `--keep-version` / `--note "改了什么"` / `--dry-run`；默认输出到桌面。
+  加 `--bootstrap` 会另出一个 6 KB「引导包」，给还没装过更新器的老用户手动覆盖一次。
+- 用户怎么装：双击安装目录里的 **`应用更新.bat`** → 选那个 zip → 回车。
+  实际逻辑在 `CEST_Studio\tools\apply_update.py`：
+  1. **拦脏包** —— 包里一旦出现 `runtime\` / `_dev\` / `logs\` / `settings.json` /
+     `__pycache__` / `*.bak_*` / `*.log`，整包拒绝（更新包只该装代码）；
+  2. 按包内 `update_manifest.json` 逐文件核对 **sha256**，对不上就整包不装；
+  3. 要覆盖的旧文件先**改名移动**到 `_bak_更新_<时间戳>\`（同盘改名，瞬间、不占额外空间）；
+  4. 逐文件写入后再复核 sha256；**任何一步失败 → 自动全量回滚**，本地恢复原样；
+  5. 报「旧版本 → 新版本」，提示关掉窗口重新双击「启动 CEST Studio.vbs」。
+- **绝不动**：`runtime\`、`_dev\`、`logs\`、`config\settings.json`、用户自己的数据目录。
+- 更新包内容白名单：顶层启动脚本 / 说明文件 + `CEST_Studio\` + `03_Python_全链路\`；
+  自动排除 `logs/ __pycache__/ *.pyc *.pyo *.log *bak* settings.json`。
+- 版本倒挂（包里比本地旧）会被拦下，要装得加 `--force`；本地同版本会提示「没什么可更新」。
+- **2026-10-16 实测（真实老用户路径）**：把 2026-10-06 的完整包解压成安装目录（13832 文件 / 498 MB，
+  没有 `应用更新.bat`），走一遍「引导包覆盖一次 → 双击 `应用更新.bat` 装 v1.0.1」：退出码 0、76 个文件更新、
+  旧文件进 `_bak_更新_<时间戳>\`、`runtime\` 与 `config\settings.json` 哈希前后一致、逐文件与源码比对 75/75 一致；
+  用安装目录自带 runtime 离屏启动，标题显示 `v1.0.1`。脏包 / 篡改包 / 装错目录 / 版本倒挂全部拦下。
+- **便携「更新工具」文件夹 = 自包含、双击就更新（2026-10-16 改）**：`cest-gui\更新工具\` 里是
+  `应用更新.bat` / `apply_update.py` / `怎么用.txt` / `更新包\CEST-Studio-更新-vX.Y.Z.zip`（自带包）。
+  整个文件夹拷进**任意版本**的 cest-gui（放哪一层都行），**双击 `应用更新.bat` 就完事**：
+  bat 自己往上找安装目录（认 `CEST_Studio\app\main.py` + `runtime\python.exe`），自己用 `更新包\` 里最新的 zip，
+  带 `--yes` 一路装完（中途不用按键），末尾按任意键关窗；找不到目录红字报错（exit 1）。
+  只有「把一个 zip 拖到 bat 上」时才用你拖的那个；`更新包\` 里没 zip 才退化成弹文件框。
+  ⚠ 判断是走拖拽还是自带包，依据是 `if exist "%~1"`（%~1 真的是个存在的文件），**不是**「有没有参数」——
+  否则带 `--dry-run` / `--yes` 之类开关时会退化成弹窗（这个坑踩过，已修）。
+- **规则（写死，别偷懒）：代码 / 版本一改，`更新工具\` 必须跟着刷新。**
+  `导出代码更新包.py` 出完包会**自动**调 `_dev\生成更新工具.py`：① 从 `CEST_Studio\tools\apply_update.py`
+  拷一份最新的过去、重写 `应用更新.bat` + `怎么用.txt`（版本号写进说明抬头）；② 把刚出的 zip 放进 `更新包\`
+  （旧包挪进 `更新包\_bak_<时间戳>\`，不删）；③ 在桌面另打一份 `发这个_更新工具_vX.Y.Z.zip`。
+  所以 `更新工具\apply_update.py` 永远是**源码的一份拷贝**，不许手抄第二份逻辑、不许留旧版本；
+  手动刷：双击 `_dev\生成更新工具.bat`（可加 `--pkg "…zip" --zip-out "桌面"`）；
+  自检：`python _dev\生成更新工具.py --check`（exit 0 = 两份 sha256 一致）；出包时加 `--no-tool` 才跳过。
+- **发更新给对方的标准动作（只有一个东西）**：把桌面 **`发这个_更新工具_vX.Y.Z.zip`**（约 350 KB）发过去。
+  对方解压进自己的 cest-gui（和「启动 CEST Studio.vbs」同一层最省事）→ 双击 `更新工具\应用更新.bat` →
+  不用点任何东西就装完 → 关掉窗口重新双击「启动 CEST Studio.vbs」。
+  已装过旧「更新工具」的人，也可以照旧双击安装目录里的 `应用更新.bat`、手动选 `CEST-Studio-更新-vX.Y.Z.zip`。
+- **已废弃**：`--bootstrap` 引导包（2026-10-16 删）——自包含的 `更新工具\` 已覆盖「老用户没有更新器」，发一个东西就够。
+
+- **`CEST_Studio\VERSION` 永远等于「最近一次出包的版本号」**（出包时自动写进去，默认 +1）。
+  出包前扫一眼：若它还停在老版本（例如已发出 1.0.1、本地还是 1.0.0），自动 +1 会再出一份 1.0.1，
+  老用户会被「没什么可更新」挡住 —— 这种情况用 `--version 1.0.2` 明确指定新版本号。

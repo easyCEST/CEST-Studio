@@ -141,7 +141,21 @@ def main(argv=None):
     _install_cjk_font(app)
     theme.apply(app)
     win = MainWindow()
-    win.resize(1480, 940)
+    # 启动尺寸按屏幕可用区域自适应：屏幕窄/分辨率低时不要把窗口撑得比屏幕还大
+    # （撑得过大 → 左右分隔条被两侧最小宽度夹死，看起来像“只有最大化才能拖”）。
+    _w = _h = 0
+    try:
+        _scr = app.primaryScreen()
+        _geo = _scr.availableGeometry() if _scr else None
+        if _geo and _geo.width() > 200:
+            _w = min(1480, max(960, int(_geo.width() * 0.94)))
+            _h = min(940, max(640, _geo.height() - 60))
+        if _geo:
+            print('[启动] 屏幕可用区 %dx%d → 窗口 %dx%d'
+                  % (_geo.width(), _geo.height(), _w or 1480, _h or 940))
+    except Exception as _e:      # 探测屏幕失败也不能挡启动
+        print('[启动] 屏幕尺寸探测失败（忽略）：%r' % (_e,))
+    win.resize(_w or 1480, _h or 940)
     win.show()
 
     # 有些启动方式（如 WScript.Shell.Run 的 SW_HIDE / vbHide）会把 SW_HIDE 塞进

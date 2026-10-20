@@ -31,7 +31,9 @@ from jobs.ctx import JobContext
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('CEST Studio —— CEST 处理链桌面版')
+        self._ver = core_path.version()
+        self.setWindowTitle('CEST Studio —— CEST 处理链桌面版'
+                            + (f'   v{self._ver}' if self._ver else ''))
         self.det: Detection | None = None          # 当前模块的识别结果
         self._cfg = settings.load()
         self._start_module = str(self._cfg.get('module') or '')
@@ -45,7 +47,7 @@ class MainWindow(QMainWindow):
         self._cur_mid = registry.ALL[0].id
         self._build()
         core_path.install()
-        self.log('CEST Studio 已启动。')
+        self.log('CEST Studio 已启动。' + (f'（v{self._ver}）' if self._ver else ''))
         self.log('核心层：' + core_path.fingerprint())
         # 恢复上次的输出总目录（触发 _on_proj_changed）
         if self._cfg.get('out_root'):
@@ -138,15 +140,32 @@ class MainWindow(QMainWindow):
         mid.addWidget(self.pages)
         mid.setStretchFactor(0, 0)
         mid.setStretchFactor(1, 1)
-        v.addWidget(mid, 1)
+        mid.setChildrenCollapsible(False)     # 导航/页面都不允许被拖到 0 宽
+        mid.setCollapsible(0, False)
+        mid.setCollapsible(1, False)
 
-        # ---- 底部：全局日志 ----
+        # ---- 底部：全局日志（竖向分隔条，可上下拖高；不再锁 130）----
         self.log_title = QLabel('全局日志')
         self.log_title.setObjectName('sectionTitle')
         self.log_panel = LogPanel()
-        self.log_panel.setMaximumHeight(130)
-        v.addWidget(self.log_title)
-        v.addWidget(self.log_panel)
+        log_box = QWidget()
+        log_box.setObjectName('logBox')
+        lbv = QVBoxLayout(log_box)
+        lbv.setContentsMargins(0, 0, 0, 0)
+        lbv.setSpacing(4)
+        lbv.addWidget(self.log_title)
+        lbv.addWidget(self.log_panel, 1)
+        vs_log = QSplitter(Qt.Orientation.Vertical)
+        vs_log.setObjectName('vsplitLog')
+        vs_log.addWidget(mid)
+        vs_log.addWidget(log_box)
+        vs_log.setChildrenCollapsible(False)
+        vs_log.setCollapsible(0, False)
+        vs_log.setCollapsible(1, False)
+        vs_log.setStretchFactor(0, 1)
+        vs_log.setStretchFactor(1, 0)
+        vs_log.setSizes([620, 130])
+        v.addWidget(vs_log, 1)
 
         self.nav.setCurrentRow(0)
         self.refresh_modules()

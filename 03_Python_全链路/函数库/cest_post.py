@@ -231,7 +231,11 @@ def roi_plot_song(nROI, legends, thmask, roi_dir, img, caxis_range=None,
             try:
                 if f.resolve() != dst.resolve():      # 复用的是别处的，拷一份过来保持结构一致
                     roi_dir.mkdir(parents=True, exist_ok=True)
-                    savemat(str(dst), {'ROI_total': raw})
+                    payload = {'ROI_total': raw}
+                    extra = load_mat(f, ['ROI_total_layers'])   # ⑧ 逐层 ROI：一并带过去，别丢
+                    if 'ROI_total_layers' in extra:
+                        payload['ROI_total_layers'] = extra['ROI_total_layers']
+                    savemat(str(dst), payload)
             except OSError:
                 pass
             return out

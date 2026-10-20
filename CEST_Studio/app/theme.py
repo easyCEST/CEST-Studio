@@ -185,6 +185,8 @@ QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 QSplitter::handle {{ background: transparent; }}
 QSplitter::handle:horizontal {{ width: 8px; }}
+QSplitter::handle:vertical {{ height: 8px; }}
+QSplitter::handle:hover {{ background: #b9c6d8; }}
 
 QToolTip {{
     background: #1f2937; color: #f8fafc; border: none; padding: 5px 7px;

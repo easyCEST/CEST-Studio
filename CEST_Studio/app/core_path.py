@@ -83,3 +83,16 @@ def fingerprint() -> str:
         except OSError:
             pass
     return ' '.join(items)
+
+
+def version() -> str:
+    """读 <壳>\VERSION（更新包会写它）—— 拿不到就返回空串，绝不报错。"""
+    for p in (_SHELL / 'VERSION', _ROOT / 'VERSION'):
+        try:
+            if p.is_file():
+                v = p.read_text(encoding='utf-8-sig').strip()
+                if v:
+                    return v
+        except OSError:
+            pass
+    return ''

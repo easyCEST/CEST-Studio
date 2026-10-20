@@ -41,9 +41,46 @@ NORM_LABEL = {'raw': 'Raw（不归一）', 'div_max': '÷列最大', 'z01': '0�
 # ===========================================================================
 # 一、ROI 索引与平均
 # ===========================================================================
-def load_roi_total(path) -> list:
+def load_roi_layers(path):
+    """读 ROI_total.mat 里的 **逐层 ROI**（ROI_total_layers 变量，⑧ 逐层画时才有）。
+
+    返回 None，或 out[k][z]（k=ROI 序号 0-based，z=层号 0-based）的 0-based 索引数组：
+
+    * 非空数组      → 该 ROI 在该层单独画的掩模（∩ 该层去噪掩模后的索引）
+    * ``[-1]`` 哨兵 → 该 ROI 在该层确实没有（逐层画、这层没动过笔）
+    * 空数组 (size 0) → 该 ROI 是 2D 共用，请回退用 ``ROI_total[k]``
+    """
+    got = load_mat(path, ['ROI_total_layers'])
+    raw = got.get('ROI_total_layers')
+    if raw is None:
+        return None
+    outer = np.asarray(raw, dtype=object)
+    if outer.ndim == 0 or outer.size == 0:
+        return None
+    out = []
+    for cel in outer.reshape(-1):                        # 每个元素 = 一个 ROI 的逐层 cell
+        inner = np.asarray(cel, dtype=object).reshape(-1)
+        row = []
+        for el in inner:
+            e = np.rint(np.asarray(el).ravel()).astype(np.int64)
+            if e.size == 1 and e[0] == -1:              # 哨兵：该层确实没有 ROI
+                row.append(e)
+            else:
+                row.append(e - 1)                       # 1-based → 0-based
+        out.append(row)
+    return out
+
+
+def load_roi_total(path, layer=None) -> list:
     """读 ROI_total.mat → 每个 ROI 的 **0-based 列优先**线性索引数组列表。
 
+    layer : 给定（**1-based 层号**）且文件里带逐层 ROI 时，优先用该层的索引：
+
+            * 该层有单独画的 → 用它
+            * 该层是 ``[-1]`` 哨兵 → 空数组（该 ROI 在该层没有）
+            * 该层是空数组 → 回退到 2D 共用那张（= 全层平均上画的）
+
+            不传 layer（或文件是纯 2D）→ 与旧版逐位一致。
     兼容 MATLAB 的 cell(N,1) / cell(1,N) / 单个矩阵。
     """
     got = load_mat(path, ['ROI_total', 'roi_total'])
@@ -55,6 +92,18 @@ def load_roi_total(path) -> list:
     for el in arr:
         e = np.asarray(el).ravel()
         out.append(np.rint(e).astype(np.int64) - 1)          # 1-based → 0-based
+    if layer is not None:
+        lay = load_roi_layers(path)
+        if lay is not None:
+            z = int(layer) - 1
+            for k in range(min(len(out), len(lay))):
+                row = lay[k]
+                if 0 <= z < len(row):
+                    e = np.asarray(row[z], dtype=np.int64).ravel()
+                    if e.size == 1 and e[0] == -1:
+                        out[k] = np.array([], dtype=np.int64)
+                    elif e.size > 0:
+                        out[k] = e
     return out
 
 
@@ -156,13 +205,14 @@ def fit_curve(w, z, ppm=None, par0=None, bounds=None):
 # 三、总入口：算一个病例/一层的全部 ROI 曲线
 # ===========================================================================
 def run_curves(z_exp, z_as, w_offset, x_as, roi_total_path, out_dir,
-               cfg=None, log=print, progress=None) -> dict:
+               cfg=None, log=print, progress=None, layer=None) -> dict:
     """算 ROI 曲线并落盘。
 
     z_exp/z_as : (X,Y,nw) / (X,Y,nx) 的 ROI 底图（mask 版）；z_as 可为 None
     out_dir    : 输出目录（不存在会建）
     cfg        : trim(True) / sym / negorpos / ppm / par0 / bounds / rois / dpi /
                  norm_mode / save_mat / save_xlsx / save_png
+    layer      : 1-based 层号；有逐层 ROI 时，本层各取自己那张（缺层回退 2D 共用）
     返回 dict（含各 ROI 的曲线、拟合参数、文件清单）
     """
     cfg = dict(cfg or {})
@@ -185,7 +235,7 @@ def run_curves(z_exp, z_as, w_offset, x_as, roi_total_path, out_dir,
     if z_as is not None and (xa is None or z_as.shape[2] != xa.size):
         z_as, xa = None, None
 
-    rois_all = load_roi_total(roi_total_path)
+    rois_all = load_roi_total(roi_total_path, layer=layer)
     pick = cfg.get('rois')
     if pick:
         idxs = [int(v) - 1 for v in pick]
@@ -194,6 +244,16 @@ def run_curves(z_exp, z_as, w_offset, x_as, roi_total_path, out_dir,
         idxs = list(range(len(rois_all)))
     if not idxs:
         raise ValueError('没有可用的 ROI（检查 ROI_total.mat 或「要算哪些 ROI」）')
+    # 逐层 ROI：这一层没画到那些 ROI → 跳过（不参与本层的平均/拟合）
+    skipped = [k for k in idxs if np.asarray(rois_all[k]).size == 0]
+    if skipped:
+        log('   [跳过] 本层没有 ROI 的：'
+            + '、'.join(f'ROI{k + 1}' for k in skipped)
+            + ('（逐层 ROI 下有些层没勾画）' if layer is not None else ''))
+        idxs = [k for k in idxs if np.asarray(rois_all[k]).size > 0]
+    if not idxs:
+        raise ValueError(f'第 {layer} 层没有可用的 ROI（逐层 ROI 下这一层没勾画）'
+                         if layer is not None else '没有可用的 ROI')
 
     n = len(idxs)
     # Z 谱三口径：用**裁剪前**的 ROI 平均谱（= MATLAB 的 Zspc_*，全长 nw）
@@ -275,6 +335,8 @@ def run_curves(z_exp, z_as, w_offset, x_as, roi_total_path, out_dir,
             log(f'   [提示] 曲线图失败（跳过）：{e}')
 
     meta = dict(n_roi=N, rois=[k + 1 for k in idxs], trim=do_trim, negorpos=negorpos,
+                layer=(int(layer) if layer is not None else None),
+                skipped_rois=[k + 1 for k in skipped],
                 ppm={k: float(v) for k, v in ppm.items()},
                 par0=[float(v) for v in par0], bounds=[[float(v) for v in bounds[0]],
                                                        [float(v) for v in bounds[1]]],

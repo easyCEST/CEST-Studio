@@ -55,6 +55,38 @@ def _f(s):
         return None
 
 
+def _split_layers(tg, arr, n_layer):
+    """把 3D (X,Y,层) 掩模还原成「共用一张 + 逐层覆盖」：取出现次数最多的那一层当共用。
+
+    这样「共用 + 少数层微调」能原样还原；纯逐层也能还原；逐层为空的层照样保留为空。
+    """
+    from collections import Counter
+    a = np.asarray(arr).astype(bool)
+    if a.ndim != 3:
+        tg.set(a)
+        return tg
+    L = int(min(a.shape[2], int(n_layer)))
+    if L <= 0:
+        tg.set(a)
+        return tg
+    a = a[:, :, :L]
+    keys = [np.packbits(a[:, :, z]).tobytes() for z in range(L)]
+    cnt = Counter(keys)
+    common = cnt.most_common(1)[0][0]
+    shared = None
+    for z in range(L):
+        if keys[z] == common:
+            shared = a[:, :, z].copy()
+            break
+    tg.per_layer.clear()
+    for z in range(L):
+        if keys[z] != common:
+            tg.per_layer[z] = a[:, :, z].copy()
+    tg.shared = shared if (shared is not None and shared.any()) else None
+    tg.shape = a.shape[:2]
+    return tg
+
+
 class MaskCanvasDialog(QDialog):
     def __init__(self, parent, s0, case='', img_interp=None, w=None,
                  init=None, snr=15.0, default_base='S0 逐层', nroi=0,
@@ -126,8 +158,9 @@ class MaskCanvasDialog(QDialog):
             if isinstance(arr, np.ndarray):
                 a = np.asarray(arr).astype(bool)
                 if a.ndim == 3:
-                    a = a.any(axis=2)
-                tg.set(a)
+                    _split_layers(tg, a, self.n_layer)     # 逐层 ROI：拆成「共用 + 逐层覆盖」
+                else:
+                    tg.set(a)
             self.targets[key] = tg
         # 默认停在哪一个：有掩模且要画 ROI 时直接停 ROI1，否则停 liverMask
         self._default_target_key = ('ROI1' if (self.nroi >= 1 and self.mask2d is not None)
@@ -312,7 +345,8 @@ class MaskCanvasDialog(QDialog):
         self.chk_vis.toggled.connect(self._on_vis_toggled)
         self.chk_per = QCheckBox('本层单独保存')
         self.chk_per.setToolTip('勾上后，本层的涂改只作用于这一层；其余层用「共用」那张。\n'
-                                '导出时自动合成 3D (X,Y,层)。')
+                                '导出时自动合成 3D (X,Y,层)。\n'
+                                '（器官 ROI 同理：勾上 → 本层单独画，③/⑤ 逐层各用对应层）')
         self.chk_per.toggled.connect(lambda _v: self._reload_layer())
         hb.addWidget(self.chk_vis)
         hb.addWidget(self.chk_per)
@@ -465,9 +499,11 @@ class MaskCanvasDialog(QDialog):
             self.lab_layer.setText(
                 f'共 {self.n_layer} 层\n当前：器官 ROI 底图\n'
                 f'（{"1−Z" if self._is_st() else "Z"} @ {self.sp_ppm.value():g} ppm 的 '
-                f'{self.n_layer} 层平均'
+                + (f'{self.n_layer} 层平均' if self.mean_mode
+                   else f'第 {self.layer + 1} 层')
                 + ('× 去噪掩模' if self.mask2d is not None else '，⚠ 还没掩模')
-                + '）')
+                + '）'
+                + ('' if self.mean_mode else '\n（勾「本层单独保存」→ 只改这一层）'))
         else:
             self.lab_layer.setText(
                 (f'共 {self.n_layer} 层\n当前：★ 全层平均图\n'
@@ -503,7 +539,8 @@ class MaskCanvasDialog(QDialog):
         self.mean_mode = (key == -1)
         tg = self._cur_target()
         if tg is not None and tg.kind == 'roi':
-            # 器官 ROI 底图是「Z 的 N 层平均」，与层览无关：只记层号，不动底图
+            # 器官 ROI 底图同样是「Z @ppm × 去噪掩模」：全层平均行 = 层均（画 2D 共用）；
+            # 单层行 = 该层 Z 图（勾「本层单独保存」即可逐层单独画）
             if key != -1:
                 self.layer = int(key)
         elif self.mean_mode:
@@ -584,7 +621,7 @@ class MaskCanvasDialog(QDialog):
             m = self.canvas.compose_ctx(ctx_id)
             if m is None or not m.any():
                 continue
-            if tg.kind == 'roi' or scope in ('shared', 'mean'):
+            if scope in ('shared', 'mean'):
                 tg.shared = m
             elif scope.startswith('L'):
                 try:
@@ -638,22 +675,24 @@ class MaskCanvasDialog(QDialog):
             self.chk_per.setChecked(bool(not self.mean_mode and tg
                                          and self.layer in tg.per_layer))
             self.chk_per.blockSignals(False)
-        self.chk_per.setEnabled((not self.mean_mode) and not is_roi)
+        self.chk_per.setEnabled(not self.mean_mode)
         self.chk_per.setToolTip(
-            '现在停在「★ 全层平均」上，画的是一张 20 层共用的掩模。\n'
-            '要让某一层单独画：左边点那一层 → 再勾这个。'
+            '现在停在「★ 全层平均」上，画的是一张 %d 层共用的掩模。\n'
+            '要让某一层单独画：左边点那一层 → 再勾这个。' % self.n_layer
             if self.mean_mode else
-            '勾上后，本层的涂改只作用于这一层；其余层用「共用」那张。\n'
-            '导出时自动合成 3D (X,Y,层)。')
+            ('器官 ROI：勾上 → 本层单独画（导出 3D，③/⑤ 逐层各用对应层）；\n'
+             '不勾 → 其余层回退到 2D 共用那张。'
+             if is_roi else
+             '勾上后，本层的涂改只作用于这一层；其余层用「共用」那张。\n'
+             '导出时自动合成 3D (X,Y,层)。'))
         editable = bool(tg and tg.editable)
         self.canvas.readonly = not editable
         self.canvas.color = tg.color if tg else '#22c55e'
         # 上下文 = 目标 × （共用张 / 某一层）；同一下文里保留矢量操作，切回来还能继续拖
-        # 器官 ROI 一律存「共用」（2D 一张，与 MATLAB roipoly 口径一致）
+        # 器官 ROI 与 liverMask 同口径：全层平均上画 = 2D 共用；单层 + 勾 = 逐层
         if tg is not None:      # 目标还没选出来时不建上下文（免得留个空的 none|shared）
-            scope = 'shared' if is_roi else (
-                'mean' if self.mean_mode else ('L%d' % self.layer
-                                               if self.chk_per.isChecked() else 'shared'))
+            scope = ('mean' if self.mean_mode else ('L%d' % self.layer
+                                                    if self.chk_per.isChecked() else 'shared'))
             self.canvas.set_context(f'{tg.key}|{scope}', seed=self._editing_mask(tg),
                                     reset_undo=not keep_undo)
         ovs = []
@@ -678,8 +717,7 @@ class MaskCanvasDialog(QDialog):
         """
         if tg is None:
             return None
-        if tg.kind == 'roi':
-            return tg.shared          # 器官 ROI：永远一张 2D 共用
+        # 器官 ROI 与 liverMask 同口径：不勾 = 改 2D 共用；单层 + 勾 = 只改这一层
         if self.mean_mode:
             return tg.shared
         if self.chk_per.isChecked():
@@ -690,7 +728,7 @@ class MaskCanvasDialog(QDialog):
         tg = self._cur_target()
         if tg is None or not tg.editable:
             return
-        per = (not self.mean_mode) and self.chk_per.isChecked() and tg.kind != 'roi'
+        per = (not self.mean_mode) and self.chk_per.isChecked()
         tg.set(self.canvas.mask, self.layer, per)
         self._update_row_text()
 
@@ -754,14 +792,26 @@ class MaskCanvasDialog(QDialog):
         self._auto_caxis()
 
     def _roi_z_2d(self, z=None):
-        """归一化 Z 谱 @ 目标 ppm 的 N 层平均（严格复刻 MATLAB roi_display_mode=1）。"""
+        """归一化 Z 谱 @ 目标 ppm 的图。
+
+        「★ 全层平均」→ N 层平均（严格复刻 MATLAB roi_display_mode=1）；
+        停在某一层 → 该层的 Z 图（这就使逐层单独画 ROI 有了对应底图）。
+        """
+        zz = self.layer if z is None else int(z)
         if self.roi_z is None or self.roi_w is None or self.roi_w.size == 0:
-            return self.s0.mean(axis=2)
+            if self.mean_mode:
+                return self.s0.mean(axis=2)
+            return self.s0[:, :, min(zz, self.s0.shape[2] - 1)]
         k = int(np.argmin(np.abs(self.roi_w - self.sp_ppm.value())))
         arr = self.roi_z
         if arr.ndim == 4:            # (X, Y, 频, 层)
-            return arr[:, :, k, :].mean(axis=2)
+            a = arr[:, :, k, :]
+            if self.mean_mode:
+                return a.mean(axis=2)
+            return a[:, :, min(zz, a.shape[2] - 1)]
         if arr.ndim == 3:
+            if (not self.mean_mode) and arr.shape[2] == self.s0.shape[2]:
+                return arr[:, :, min(zz, arr.shape[2] - 1)]
             return arr.mean(axis=2)
         return arr
 

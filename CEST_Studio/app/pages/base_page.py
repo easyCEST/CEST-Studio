@@ -17,16 +17,23 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit,
                                QMessageBox, QProgressBar, QPushButton,
-                               QScrollArea, QSplitter, QTextEdit, QVBoxLayout,
+                               QScrollArea, QSizePolicy, QSplitter, QTextEdit, QVBoxLayout,
                                QWidget)
 
 from detect import chain
 
 from jobs.worker import JobThread
+from app.widgets.flow_layout import FlowLayout, FlowWidget
 
 
 # 输入根是「单病例 / 单个结果目录」的识别类型（这些走老办法：module.validate 把关）
 SINGLE_KINDS = ('recon_mat', 'recon_root', 'img_mat', 'roi_mat', 'post_mat')
+
+# 竖向分隔条（上下可拖）适用页：
+#   左栏 = 参数区(scroll) ↔ 输出与运行(g_ro)；右栏 = 结果 ↔ 预览图
+# 只给「值得的」页装；其余页保持原样堆叠（上下拖动没意义/会挤小结果区）
+VS_LEFT = ('m3_post', 'm4_ld', 'm5_prf', 'm6_prf_analysis', 'm2_display', 'm_roi')
+VS_RIGHT = ('m2_display', 'm4_ld', 'm6_prf_analysis', 'm_roi')
 
 
 def _to_float(s):
@@ -60,6 +67,9 @@ class ModulePage(QWidget):
     # ------------------------------------------------------------------ UI
     def _build(self):
         self.setObjectName('pageRoot')
+        _mid = getattr(self.module, 'id', '')
+        self._vs_left = _mid in VS_LEFT      # 左栏 参数区↔输出运行 可上下拖
+        self._vs_right = _mid in VS_RIGHT    # 右栏 结果↔预览图 可上下拖
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(6)
@@ -103,7 +113,9 @@ class ModulePage(QWidget):
         self.miss_label = QLabel('')
         self.miss_label.setWordWrap(True)
         cvb.addWidget(self.miss_label)
-        srow = QHBoxLayout()
+        srow_host = FlowWidget(hspacing=4, vspacing=2)
+        srow_host.setObjectName('stageFlow')
+        srow = srow_host.flow()
         srow.setSpacing(4)
         self.lab_stage = QLabel('数据链：')
         srow.addWidget(self.lab_stage)
@@ -117,8 +129,7 @@ class ModulePage(QWidget):
             _b.clicked.connect(lambda _=False, k=_mid: self.window.goto(k))
             srow.addWidget(_b)
             self.stage_btns[_mid] = _b
-        srow.addStretch(1)
-        cvb.addLayout(srow)
+        cvb.addWidget(srow_host)
         # （chain_box 已改加到右栏，这里不再加）
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -175,7 +186,7 @@ class ModulePage(QWidget):
             b_adv.clicked.connect(self._open_adv_params)
             form.addRow('', b_adv)
         self._apply_visibility(getattr(self.window, 'det', None))
-        g_p.setMinimumWidth(468)
+        g_p.setMinimumWidth(330)
         tv.addWidget(g_p)
         # 影响「计划」的参数一变就重新分析
         for _k in ('src', 'cases', 'case', 'seq_base', 'slice_max', 'm0_tpi'):
@@ -208,7 +219,7 @@ class ModulePage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setMinimumHeight(190)
         scroll.setWidget(top_box)
-        lv.addWidget(scroll, 1)
+        # scroll 与 g_ro 的堆叠在下面按 self._vs_left 决定（可能套竖向分隔条）
 
         # [输出 + 运行]（常驻底部，不滚动）
         g_ro = QGroupBox('输出与运行')
@@ -241,13 +252,28 @@ class ModulePage(QWidget):
         rv.addLayout(hb)
         rv.addWidget(self.bar)
         rv.addWidget(self.step_label)
-        lv.addWidget(g_ro, 0)
+        if self._vs_left:
+            vs_l = QSplitter(Qt.Orientation.Vertical)
+            vs_l.setObjectName('vsplitLeft')
+            vs_l.addWidget(scroll)
+            vs_l.addWidget(g_ro)
+            vs_l.setChildrenCollapsible(False)
+            vs_l.setCollapsible(0, False)
+            vs_l.setCollapsible(1, False)
+            vs_l.setStretchFactor(0, 1)
+            vs_l.setStretchFactor(1, 0)
+            vs_l.setSizes([620, 230])
+            lv.addWidget(vs_l)
+        else:
+            lv.addWidget(scroll, 1)
+            lv.addWidget(g_ro, 0)
 
         split.addWidget(left)
 
         # ---- 右：结果 ----
         right = QWidget()
         right.setObjectName('pageRight')
+        right.setMinimumWidth(320)          # 右栏最小宽度：配合数据链折行，窗口化时分隔条也能拖
         rrv = QVBoxLayout(right)
         # ★ 数据链块放右栏顶部：左栏纵向空间紧，放左边会把 ④/②/⑧ 面板的状态行压掉
         rrv.addWidget(self.chain_box)
@@ -255,17 +281,38 @@ class ModulePage(QWidget):
         rrv.setSpacing(6)
         res_title = QLabel('结果')
         res_title.setObjectName('sectionTitle')
-        rrv.addWidget(res_title)
         self.result = QTextEdit()
         self.result.setObjectName('result')
         self.result.setReadOnly(True)
-        rrv.addWidget(self.result, 3)
 
         self.preview = QLabel('（预览图会显示在这里）')
         self.preview.setObjectName('preview')
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setMinimumHeight(240)
-        rrv.addWidget(self.preview, 4)
+
+        if self._vs_right:
+            top_r = QWidget()
+            top_r.setObjectName('resultTop')
+            trv = QVBoxLayout(top_r)
+            trv.setContentsMargins(0, 0, 0, 0)
+            trv.setSpacing(6)
+            trv.addWidget(res_title)
+            trv.addWidget(self.result, 1)
+            vs_r = QSplitter(Qt.Orientation.Vertical)
+            vs_r.setObjectName('vsplitRight')
+            vs_r.addWidget(top_r)
+            vs_r.addWidget(self.preview)
+            vs_r.setChildrenCollapsible(False)
+            vs_r.setCollapsible(0, False)
+            vs_r.setCollapsible(1, False)
+            vs_r.setStretchFactor(0, 3)
+            vs_r.setStretchFactor(1, 4)
+            vs_r.setSizes([280, 420])
+            rrv.addWidget(vs_r, 1)
+        else:
+            rrv.addWidget(res_title)
+            rrv.addWidget(self.result, 3)
+            rrv.addWidget(self.preview, 4)
 
         self.btn_open = QPushButton('打开输出目录')
         self.btn_open.clicked.connect(self._open_out)
@@ -274,6 +321,9 @@ class ModulePage(QWidget):
 
         split.setStretchFactor(0, 4)
         split.setStretchFactor(1, 5)
+        split.setChildrenCollapsible(False)   # 左右栏都不允许被拖到 0 宽
+        split.setCollapsible(0, False)
+        split.setCollapsible(1, False)
         root.addWidget(split)
 
     def _make_widget(self, f):
@@ -769,7 +819,9 @@ class ModulePage(QWidget):
             pass
         for mid, b in self.stage_btns.items():
             ok = st.get(mid)
-            b.setText(f'{chain.STAGE_NAME[mid]} {"✓" if ok else "待跑"}')
+            nm = chain.STAGE_NAME[mid]
+            b.setText(f'{"✓" if ok else "○"} {nm}')   # 状态用前缀符号，不用「待跑」两字 → 一排按钮不再顶宽右栏
+            b.setToolTip(f'{nm}：{"已完成 ✓" if ok else "待跑"}')
             b.setStyleSheet('color:#1e8449;' if ok else 'color:#b9770e;')
 
     def _refresh_dyn(self, proj=None):

@@ -13,7 +13,7 @@ cest-gui —— 以后就在这里开发，这里也是交付包
 
 3) 要发给别人
    双击 cest-gui\_dev\导出干净交付包.bat
-       → 输出到 桌面\cest-gui（自动去掉 _dev / logs / 缓存，重置 settings.json）
+       → 输出到 cest-gui\_dev\发布\cest-gui（自动去掉 _dev / logs / 缓存，重置 settings.json；不往桌面写任何东西）
        → 把那个文件夹整个拷给对方，对方双击「启动 CEST Studio.vbs」即用
 
 4) 排错
@@ -23,3 +23,21 @@ cest-gui —— 以后就在这里开发，这里也是交付包
 5) 其它
    _dev\ 里是工具/备份/测试记录/交接文档，跟使用无关，不用管、发包也不用带。
    详细版说明在 _dev\开发与交付说明.txt 和 _dev\工作交接说明.txt。
+
+
+   平时只改代码、要发给已装好的用户 → 双击 cest-gui\_dev\导出代码更新包.bat
+       → 只在工作区内落东西（桌面不留任何文件、也不产任何压缩包）：
+           cest-gui\更新工具\                            ← 成品夹，自带更新包，直接发它
+           cest-gui\_dev\发布\CEST-Studio-更新-vX.Y.Z\    ← 更新包本体（文件夹，约 0.9 MB）
+       → 发人前自己右键压缩 cest-gui\更新工具\（工具不产压缩包，压缩由你来）
+       → 对方：解压进自己的 cest-gui（和「启动 CEST Studio.vbs」同一层最省事，哪一层都行）
+         → 双击里面的「应用更新.bat」→ 零输入装完，按任意键关窗
+         → 关掉 CEST Studio 窗口、重新双击「启动 CEST Studio.vbs」才生效
+       → 直接拖包也行：把更新包文件夹（或老 zip）拖到「应用更新.bat」上放开
+       → 只有动了 runtime\ 或依赖，才重发完整 470 MB 包（_dev\导出干净交付包.bat
+         → 输出到 cest-gui\_dev\发布\cest-gui\）
+
+   注意：「更新工具」在出包时会自动刷新（拷最新 apply_update.py + 把刚出的包放进 更新包\），
+         不用手抄、不用手动压缩。手动刷：双击 _dev\生成更新工具.bat；
+         自检：runtime\python.exe _dev\生成更新工具.py --check
+         出包产物一律在 cest-gui 内（_dev\发布\、更新工具\），桌面不落任何文件。

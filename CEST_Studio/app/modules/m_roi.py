@@ -675,26 +675,42 @@ class ROIModule(Module):
         roi_show = []
         if nroi >= 1:
             th2 = _flat2d(mask3) > 0
-            drawn = [(n, _flat2d(np.asarray(m)) > 0)
+            drawn = [(n, np.asarray(m, dtype=bool))
                      for n, m in ((self._roi_draw or {}).get('rois') or [])
                      if m is not None and np.asarray(m).any()]
             existing = (out / 'ROI_total.mat').exists()
             if self._roi_dirty and drawn:
-                ctx.log(f'  器官 ROI：覆盖重画 {len(drawn)} 个（∩ 去噪掩模）')
                 if len(drawn) < nroi:
                     ctx.log(f'  [提示] nROI={nroi}，但只画了 {len(drawn)} 个 → ROI_total '
                             f'只含这 {len(drawn)} 个（MATLAB 这边会提示「太小，请重画」）')
-                lists = build_roi_total([m for _n, m in drawn], th2)
-                for (name, m), v in zip(drawn, lists):
+                base_lists, layer_lists, uniform = build_roi_total_layers(
+                    [m for _n, m in drawn], mask3, n_layer)
+                n3 = sum(1 for u in uniform if not u)
+                ctx.log(f'  器官 ROI：覆盖重画 {len(drawn)} 个（∩ 去噪掩模）'
+                        + (f'，其中 {n3} 个是逐层（3D）' if n3 else '，全部 2D 全层共用'))
+                for j, ((name, m), v, u) in enumerate(zip(drawn, base_lists, uniform)):
                     f = out / f'{name}.mat'
                     _backup(f, stamp, ctx.log)
                     P.savemat(str(f), {'ROI': m.astype(float)})
-                    ctx.log(f'  已写 {f}（勾画 {int(m.sum())} 体素，∩ 掩模后 {v.size}）')
+                    if u:
+                        it = f'2D 全层共用，∩ 掩模后 {v.size} 体素'
+                    else:
+                        it = ('逐层 %d 层（各层体素）：' % m.shape[2]
+                              + ' / '.join('—' if e is None else str(int(e.size))
+                                           for e in layer_lists[j]))
+                    ctx.log(f'  已写 {f}（勾画 {int(m.sum())} 体素，{it}）')
                 ft = out / 'ROI_total.mat'
                 _backup(ft, stamp, ctx.log)
-                P.savemat(str(ft), {'ROI_total': P._cell_of_arrays(lists)})
-                ctx.log(f'  已写 {ft}（ROI_total cell({len(lists)},1)，1-based 列优先，'
-                        + '、'.join(f'{v.size} 体素' for v in lists) + '）')
+                payload = {'ROI_total': P._cell_of_arrays(base_lists)}
+                if n3:
+                    payload['ROI_total_layers'] = _cell_of_layer_arrays(layer_lists, n_layer)
+                P.savemat(str(ft), payload)
+                ctx.log(f'  已写 {ft}（ROI_total cell({len(base_lists)},1)，1-based 列优先，'
+                        + '、'.join(f'{v.size} 体素' for v in base_lists) + '）')
+                if n3:
+                    ctx.log('  已写 ROI_total_layers（cell(%d,1) × 每层 cell(1,%d)：'
+                            '③/⑤ 逐层各取对应层，该层没画 → 回退 2D 那张，'
+                            '-1 = 该层确实没有）' % (len(layer_lists), n_layer))
                 roi_meta = dict(nROI=len(drawn), mode='redraw',
                                 names=[n for n, _m in drawn],
                                 ppm=float(p.get('roi_ppm') or 3.5),
@@ -702,11 +718,17 @@ class ROIModule(Module):
                                 display=str((self._roi_draw or {}).get('roi_display')
                                             or p.get('roi_display') or ''),
                                 base='Z@ppm 层间平均 × Mask', mask_intersect=True,
+                                ndim=[(3 if not u else 2) for u in uniform],
+                                n_layers_per_roi=[(None if u else int(n_layer))
+                                                  for u in uniform],
                                 voxels_drawn=[int(m.sum()) for _n, m in drawn],
-                                voxels=[int(v.size) for v in lists],
-                                first=[int(v[0]) if v.size else None for v in lists],
-                                max=[int(v.max()) if v.size else None for v in lists])
-                roi_show = drawn
+                                voxels=[int(v.size) for v in base_lists],
+                                voxels_layers=[[(None if e is None else int(np.asarray(e).size))
+                                                for e in row] if row is not None else None
+                                               for row in layer_lists],
+                                first=[int(v[0]) if v.size else None for v in base_lists],
+                                max=[int(v.max()) if v.size else None for v in base_lists])
+                roi_show = [(n, _flat2d(np.asarray(m)) > 0) for n, m in drawn]
             elif existing:
                 ctx.log('  器官 ROI：沿用已有 ROI_total.mat（照 MATLAB 的 try/load；'
                         '要重画点【重新画 ROI…】）')
@@ -721,7 +743,8 @@ class ROIModule(Module):
                     ctx.log(f'  [提示] 读取已有 ROI_total.mat 时出错：{e}')
                     roi_meta = dict(nROI=nroi, mode='reuse')
                 try:
-                    roi_show = list(load_existing_rois(out, nroi, shape2).items())
+                    roi_show = [(n, _flat2d(np.asarray(m)) > 0)
+                                for n, m in load_existing_rois(out, nroi, shape2).items()]
                 except Exception:                                # noqa: BLE001
                     roi_show = []
             else:
@@ -884,6 +907,86 @@ def _flat2d(a):
     return a[:, :, 0] if a.ndim == 3 else a
 
 
+def _roi_flat_idx(mm, th):
+    """(mm ∩ th) 的 1-based 列优先线性索引（升序）；没交集 → None。口径同 MATLAB。"""
+    mm = np.asarray(mm).astype(bool)
+    th = np.asarray(th).astype(bool)
+    if mm.shape != th.shape:
+        raise RuntimeError(f'ROI 形状 {mm.shape} ≠ 去噪掩模 {th.shape}')
+    idx = np.nonzero(mm & th)
+    if idx[0].size == 0:
+        return None
+    return np.sort(np.ravel_multi_index(idx, th.shape, order='F') + 1).astype(np.int64)
+
+
+def build_roi_total_layers(roi_masks, thmask3, n_layer):
+    """器官 ROI：一次算出「2D 全层共用」的 ROI_total + 「逐层」的 ROI_total_layers。
+
+    返回 ``(base_lists, layer_lists, uniform)``：
+
+    * ``base_lists[k]``  : ROI{k+1} 在 ROI_total 里的 1-based 升序索引（2D 口径）。
+                           2D ROI = 该张掩模 ∩ 去噪掩模（与 MATLAB 逐位一致）；
+                           逐层（3D）ROI = 各层并集 ∩ 去噪掩模（老工具兜底用）。
+    * ``layer_lists[k]`` : ``None`` = 该 ROI 是 2D 共用（不写逐层）；
+                           否则 list(L)，元素 = 该层 1-based 索引，``None`` = 该层确实没有 ROI。
+    * ``uniform[k]``     : True = 该 ROI 逐层一样 → 按 2D 处理。
+    """
+    th3 = np.asarray(thmask3).astype(bool)
+    if th3.ndim == 2:
+        th3 = th3[:, :, None]
+    L = int(min(th3.shape[2], int(n_layer)))
+    th0 = th3[:, :, 0]
+    base_lists, layer_lists, uniform = [], [], []
+    for k, m in enumerate(roi_masks):
+        a = np.asarray(m).astype(bool)
+        if a.ndim == 2:
+            a = a[:, :, None]
+        if a.shape[2] < L:                      # 层数不够 → 末层补齐（与 _as_layer3d 同口径）
+            a = np.concatenate([a, np.repeat(a[:, :, -1:], L - a.shape[2], axis=2)], axis=2)
+        a = a[:, :, :L]
+        if a.shape[:2] != th3.shape[:2]:
+            raise RuntimeError(f'ROI{k + 1} 形状 {a.shape[:2]} ≠ 去噪掩模 {th3.shape[:2]}')
+        if bool(np.all(a == a[:, :, :1])):      # 逐层完全一样 → 就是 2D 共用
+            v = _roi_flat_idx(a[:, :, 0], th0)
+            if v is None:
+                raise ValueError(f'ROI{k + 1} 与去噪掩模没有交集，请重新勾画')
+            base_lists.append(v)
+            layer_lists.append(None)
+            uniform.append(True)
+            continue
+        v = _roi_flat_idx(np.any(a, axis=2), th0)
+        if v is None:
+            raise ValueError(f'ROI{k + 1} 与去噪掩模没有交集，请重新勾画')
+        base_lists.append(v)
+        row = []
+        for z in range(L):
+            row.append(_roi_flat_idx(a[:, :, z], th3[:, :, z]))
+        layer_lists.append(row)
+        uniform.append(False)
+    return base_lists, layer_lists, uniform
+
+
+def _cell_of_layer_arrays(layer_lists, n_layer):
+    """写 ROI_total_layers：cell(N,1)，元素 = cell(1,L) 的 1-based 索引列向量。
+
+    2D 的 ROI → 空 matrix ``[]``（③/⑤ 读回时回退 ROI_total）；
+    该层确实没有 ROI → 单个 ``-1`` 哨兵（与真正的 1-based 索引不冲突）。
+    """
+    L = int(n_layer)
+    out = np.empty((len(layer_lists), 1), dtype=object)
+    for k, row in enumerate(layer_lists):
+        if row is None:
+            out[k, 0] = 0.0 * np.zeros((0, 0))
+            continue
+        inner = np.empty((1, L), dtype=object)
+        for z in range(L):
+            e = row[z] if z < len(row) else None
+            inner[0, z] = (np.array([[-1.0]]) if e is None
+                           else np.asarray(e, dtype=float).reshape(-1, 1))
+        out[k, 0] = inner
+    return out
+
+
 def _backup(path, stamp, log):
     """覆盖前备份 <名>.bak_<时间戳>.mat。"""
     path = Path(path)
@@ -917,7 +1020,10 @@ def build_roi_total(roi_masks, thmask):
 
 
 def load_existing_rois(roi_dir, n, shape):
-    """从 ROI<k>.mat / ROI_total.mat 还原 ROI1..ROIn 的 2D 掩模（画布续画用）。"""
+    """从 ROI<k>.mat / ROI_total.mat 还原 ROI1..ROIn 的掩模（画布续画用）。
+
+    2D 的 → 2D；逐层画过的（ROI<k>.mat 是 3D）→ 原样交回，画布会拆成「共用 + 逐层覆盖」。
+    """
     from cest_io import load_mat
     roi_dir = Path(roi_dir)
     shape = tuple(int(v) for v in shape)
@@ -935,7 +1041,8 @@ def load_existing_rois(roi_dir, n, shape):
         if f.exists():
             got = load_mat(f, ['ROI'])
             if 'ROI' in got:
-                out[f'ROI{k}'] = _flat2d(np.asarray(got['ROI'])) > 0
+                _a = np.asarray(got['ROI'])
+                out[f'ROI{k}'] = _a if _a.ndim == 3 else (_a > 0)
                 continue
         if total is not None and k - 1 < len(total):
             try:
