@@ -1,0 +1,51 @@
+===== 启动.vbs (gbk)
+Option Explicit
+' CEST Studio 无窗口启动（pythonw + 隐藏窗口，不留黑框）
+' 附带的参数会原样传给 app\main.py（便于自动化/截图测试）
+Dim sh, fso, here, py, cmd, i, extra
+Set sh = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+
+here = fso.GetParentFolderName(WScript.ScriptFullName)
+sh.CurrentDirectory = here
+
+py = "C:\Users\Administrator\Desktop\PycharmProjects\机器学习\venv\Scripts\pythonw.exe"
+If Not fso.FileExists(py) Then
+  MsgBox "找不到 Python 解释器：" & vbCrLf & py & vbCrLf & vbCrLf & _
+         "请修改 启动.vbs 里的 py 路径。", 16, "CEST Studio"
+  WScript.Quit 1
+End If
+
+extra = ""
+For i = 0 To WScript.Arguments.Count - 1
+  extra = extra & " " & WScript.Arguments(i)
+Next
+
+cmd = """" & py & """ -X utf8 """ & here & "\app\main.py""" & extra
+sh.Run cmd, 0, False      ' 0 = 隐藏窗口
+
+===== 启动.bat (gbk)
+@echo off
+rem 双击这个也不留黑窗口：立刻把工作交给 启动.vbs 后自己退出
+start "" wscript.exe "%~dp0启动.vbs" %*
+exit /b 0
+
+===== 启动_调试（带控制台）.bat (gbk)
+@echo off
+chcp 936 >nul
+title CEST Studio（调试）
+cd /d "%~dp0"
+
+set "PY=C:\Users\Administrator\Desktop\PycharmProjects\机器学习\venv\Scripts\python.exe"
+
+if not exist "%PY%" (
+  echo [ERROR] 没找到 Python 解释器：
+  echo   %PY%
+  pause
+  exit /b 1
+)
+
+set PYTHONIOENCODING=utf-8
+"%PY%" -X utf8 "app\main.py" %*
+
+if errorlevel 1 pause

@@ -13,7 +13,7 @@ CEST / APT MRI 数据处理与可视化的 **桌面工具**。把一条完整的
 ## 一、下载即用（推荐 —— 不需要装 Python）
 
 1. 打开本仓库右侧的 **Releases** 页；
-2. 下载最新的 **`CEST-Studio-v1.0.4-win64.zip`**（约 190 MB，内含 `runtime\` 便携 Python 3.10 + 全部依赖库，**已包含智能体 `cest-agent\`**）；
+2. 下载最新的 **`CEST-Studio-v1.0.5-win64.zip`**（约 190 MB，内含 `runtime\` 便携 Python 3.10 + 全部依赖库，**已包含智能体 `cest-agent\`**）；
 3. 解压到任意本地目录（路径带中文也可以；**建议不要放在网盘同步目录里**）；
 4. 双击解压出来的 **`启动 CEST Studio.vbs`** —— 程序启动，**无黑色窗口**。
 
@@ -190,7 +190,7 @@ GUI 会在 `cest-agent\cest_agent\gui_page.py` 存在时自动接入；找不到
 > 到 [Releases](https://github.com/easyCEST/CEST-Studio/releases) 页，只下最新一版 **Assets** 里的
 > **`CEST-Studio-UpdateTool-vX.Y.Z.zip`**（约 0.4 MB，就是「更新工具」，附件标签写着「更新工具(UpdateTool)…」，
 > 里面已自带该版本的更新包）→ 解压放进你的 `cest-gui` 目录 → 双击 `应用更新.bat`，升完关窗重开。
-> 当前最新版本：**v1.0.4**（对应附件 `CEST-Studio-UpdateTool-v1.0.4.zip`）。
+> 当前最新版本：**v1.0.5**（对应附件 `CEST-Studio-UpdateTool-v1.0.5.zip`）。
 
 装了之后不用重新下载整个免安装包。我们会发一个**代码更新包**
 （`CEST-Studio-更新-vX.Y.Z` **文件夹**，约 0.9 MB）：

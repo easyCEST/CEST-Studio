@@ -1,0 +1,397 @@
+{
+  "product": "CEST-Studio",
+  "version": "1.0.4",
+  "base_version": "1.0.3",
+  "generated": "2026-10-20 13:22:59",
+  "note": "竖向分隔条(上下可拖)+禁止折叠",
+  "needs_runtime_refresh": false,
+  "file_count": 77,
+  "total_bytes": 989382,
+  "files": [
+    {
+      "path": "更新说明.txt",
+      "size": 430,
+      "sha256": "64e493bc967f20c695528a8de9bb6a01213c4786b438a195b2624998e1e79f49"
+    },
+    {
+      "path": "启动 CEST Studio.vbs",
+      "size": 823,
+      "sha256": "fa7ddea25de1cc109b47eb964c7ca5d621575d8cf2e9f1c07d2e6eab191d00bf"
+    },
+    {
+      "path": "启动 CEST Studio（调试）.bat",
+      "size": 370,
+      "sha256": "244c2a25a26d71242b32e5290fcb7e497dc8b8bc1131a2b3edfe5c1d6b4fb916"
+    },
+    {
+      "path": "应用更新.bat",
+      "size": 367,
+      "sha256": "523b6ec13aa73f8ff000af10a2c88827bb2706f3769813308aa3fe476abfdd1a"
+    },
+    {
+      "path": "使用说明.txt",
+      "size": 3740,
+      "sha256": "e3fa6bff1e4fa9724476337ba948e377728e1c4a6ea402cdde910e0c11a74824"
+    },
+    {
+      "path": "开发说明.txt",
+      "size": 2804,
+      "sha256": "182cd97e2b15a04cb1cdc1e52f23cb1e853fda2a971653bc633482cfb713210e"
+    },
+    {
+      "path": "README.md",
+      "size": 8394,
+      "sha256": "baef461f687a222d4470b2d1c5d0f0e1f376745a787265933cadccfb800ea6b2"
+    },
+    {
+      "path": "requirements.txt",
+      "size": 844,
+      "sha256": "eb2563dfda0e429f610bf38f15e824285370e6639073085d76f153eced46d624"
+    },
+    {
+      "path": "CEST_Studio/app/core_path.py",
+      "size": 3167,
+      "sha256": "69d6b013c832329f0fd73e09f298764121fb702255c13b9819c568ae5559dc44"
+    },
+    {
+      "path": "CEST_Studio/app/dialogs/browse_dialog.py",
+      "size": 15223,
+      "sha256": "e05a3898881bee85153eb3f771261c9fbf5c75d3b334b284e570256179f30c6d"
+    },
+    {
+      "path": "CEST_Studio/app/dialogs/clean_dialog.py",
+      "size": 10391,
+      "sha256": "41f5f1d8e2aff3aa2c4f9e9c1171a382caec504dee4f9c975760cb740ce7449c"
+    },
+    {
+      "path": "CEST_Studio/app/dialogs/freq_dialog.py",
+      "size": 10918,
+      "sha256": "83b35726b3b7395af31a4d39256fcaabe9f9bac7f5f00b8a430371d06df8f30a"
+    },
+    {
+      "path": "CEST_Studio/app/dialogs/mask_canvas_dialog.py",
+      "size": 46929,
+      "sha256": "b09031eda990b43eeef383a3562b785078b5b2966dbc82f7060c8fb2841a7707"
+    },
+    {
+      "path": "CEST_Studio/app/dialogs/mosaic_view_dialog.py",
+      "size": 15771,
+      "sha256": "1a636287e82f4e5ef3305901a57010d7b02c5b42634886fd3cfdd8f50c4ea7e5"
+    },
+    {
+      "path": "CEST_Studio/app/dialogs/params_dialog.py",
+      "size": 10220,
+      "sha256": "290c620d8a55ab147772b21be87f4c4d0287ecf272d8477d852078e0e86f0674"
+    },
+    {
+      "path": "CEST_Studio/app/dialogs/roi_curve_dialog.py",
+      "size": 14392,
+      "sha256": "be86b6ae738d20463e3ef45f29be33c3b25fdf8c11bd0df8c93a96436866a2a5"
+    },
+    {
+      "path": "CEST_Studio/app/main.py",
+      "size": 8734,
+      "sha256": "610dd39064653705a3e41f161f84a1e6ea4a26a4ac77381d991548a4d5676867"
+    },
+    {
+      "path": "CEST_Studio/app/main_window.py",
+      "size": 17611,
+      "sha256": "cc6019808caf558982b8766ee0e93c1181a10f7229a9ea5229f683e5ca20f720"
+    },
+    {
+      "path": "CEST_Studio/app/modules/base.py",
+      "size": 4948,
+      "sha256": "723bca9ed45b4746916d373d4103148295fdf16a57fa3641ee3fae31d6d9e2a3"
+    },
+    {
+      "path": "CEST_Studio/app/modules/m0_check.py",
+      "size": 2679,
+      "sha256": "9100aff41dffbf5ca9a8b1114066c25e0004c56158dbd0a2a6b6b9c85dfb476a"
+    },
+    {
+      "path": "CEST_Studio/app/modules/m1_recon.py",
+      "size": 25168,
+      "sha256": "8b86d27f9a633f98f087f592a21bb07cc31ce9e18588838b16cf42bdc27d180d"
+    },
+    {
+      "path": "CEST_Studio/app/modules/m2_display.py",
+      "size": 31344,
+      "sha256": "59170226059c859c6bdfdc72c77aa42004c36a5c1ad85a8d6679d1b5b0ca9c90"
+    },
+    {
+      "path": "CEST_Studio/app/modules/m3_post.py",
+      "size": 35733,
+      "sha256": "b405f3f1484e8bfdd945c173c3dfd138d757a232672b4fa0ce0ec605beff0507"
+    },
+    {
+      "path": "CEST_Studio/app/modules/m4_ld.py",
+      "size": 35204,
+      "sha256": "6e8d88856c185f5c560677fdbee8576efdcbc47e7d645b010f83ca353a9e9150"
+    },
+    {
+      "path": "CEST_Studio/app/modules/m5_prf.py",
+      "size": 22544,
+      "sha256": "c7e52c5eab279e7b56bb7aedaf13e9d18fca613f1082f9a7f34a209341add9e4"
+    },
+    {
+      "path": "CEST_Studio/app/modules/m6_prf_analysis.py",
+      "size": 30265,
+      "sha256": "cf6f5c41d0b56f42ce00578b630925837a0bb2c7dab94b8c214fb00cc2e77ffe"
+    },
+    {
+      "path": "CEST_Studio/app/modules/m_import.py",
+      "size": 14587,
+      "sha256": "0be9a109f2b06add24fad4dadcd97c9988a4fc58550ef42bb83f178f0c5884a0"
+    },
+    {
+      "path": "CEST_Studio/app/modules/m_roi.py",
+      "size": 54448,
+      "sha256": "3fbc437a7976dcb2cf908e9228156a97d9d53a49b39d8087df84d670adffa444"
+    },
+    {
+      "path": "CEST_Studio/app/modules/registry.py",
+      "size": 1381,
+      "sha256": "e2d9ed339f6a012fb7afc0639bf0b07c604de06f51a5e28505ef8badf7a9f43d"
+    },
+    {
+      "path": "CEST_Studio/app/pages/base_page.py",
+      "size": 39196,
+      "sha256": "f91922055adf6140ad23e0b1d07efe257250886f46045c674dd8ce82536625d1"
+    },
+    {
+      "path": "CEST_Studio/app/theme.py",
+      "size": 7603,
+      "sha256": "7853e0e076ff3b55cc49432ef8c621e290efb4917122cf830546cbea906cf263"
+    },
+    {
+      "path": "CEST_Studio/app/widgets/autosize.py",
+      "size": 1403,
+      "sha256": "43c102d28cda62926dda0ea20149a66f3f4401cd7e32f67dd0208ed3c8808501"
+    },
+    {
+      "path": "CEST_Studio/app/widgets/drop_zone.py",
+      "size": 1476,
+      "sha256": "8da0b8bdc697f42aa553813d54e42d5454df23845c9e04ac3dbbae816449724c"
+    },
+    {
+      "path": "CEST_Studio/app/widgets/flow_layout.py",
+      "size": 4263,
+      "sha256": "ce145473728924096cfa60dd142b887129b60e7a93beae5a183b8b1aca2b4eac"
+    },
+    {
+      "path": "CEST_Studio/app/widgets/log_panel.py",
+      "size": 674,
+      "sha256": "3f1dc8665b639f2fd7c3e588e99282e544702785629ff31afff895764df9d731"
+    },
+    {
+      "path": "CEST_Studio/app/widgets/mask_canvas.py",
+      "size": 35693,
+      "sha256": "001f6f6cd26f3f53c88df87b5b46250386c2ec65adddb8b8a63609b67c963d7e"
+    },
+    {
+      "path": "CEST_Studio/app/widgets/recon_plan.py",
+      "size": 5107,
+      "sha256": "a95cf59a0055b70195d37d846b99222e5db475fe08e6a6d58778af2d3ce22867"
+    },
+    {
+      "path": "CEST_Studio/config/settings.py",
+      "size": 1807,
+      "sha256": "21ffe27d74678f561db99ee5b8e08a7636a8cab9e2fb7aa56d0e14faea2ff329"
+    },
+    {
+      "path": "CEST_Studio/detect/chain.py",
+      "size": 12221,
+      "sha256": "5facf753c36fe9505758cb31f3dc96bf5a787faaaa72eaa09ca1acee440ed09d"
+    },
+    {
+      "path": "CEST_Studio/detect/freq_doc.py",
+      "size": 10441,
+      "sha256": "f46a3a4af1c49b62b697caba82e11abcdd76b9de0f02ba5b225e0e996cd03033"
+    },
+    {
+      "path": "CEST_Studio/detect/manual_recon.py",
+      "size": 5102,
+      "sha256": "f1aac40f4f0d31f57d921f77863a2daa0f8083730187454dbb9773673216e7e7"
+    },
+    {
+      "path": "CEST_Studio/detect/rules.py",
+      "size": 6852,
+      "sha256": "1d4038a69a6bc5733bc56fdb6fc378d2cc425b8edf59a2069e9e0cffaf2179a8"
+    },
+    {
+      "path": "CEST_Studio/detect/scanner.py",
+      "size": 11376,
+      "sha256": "bef5d6576c3a7a0095a231c75c3a671d53f72fb9c8d66392ec17217eebc74086"
+    },
+    {
+      "path": "CEST_Studio/detect/series.py",
+      "size": 7656,
+      "sha256": "6a74bbf4f43f860c92a4e5a92f53c11d640470c135b003a6d5360cc6ed5c6a49"
+    },
+    {
+      "path": "CEST_Studio/jobs/ctx.py",
+      "size": 2334,
+      "sha256": "5f722f146d6fc0f4798aa2493597eb94c6bd9c70fe36ccd99b85e2ffc530e174"
+    },
+    {
+      "path": "CEST_Studio/jobs/worker.py",
+      "size": 3680,
+      "sha256": "041608e846f28fe369ff9165be0b038ff6a552929eb6ce81df8721228e7efccc"
+    },
+    {
+      "path": "CEST_Studio/launchers.txt",
+      "size": 1537,
+      "sha256": "1c0421b86d70a6192a12e616d90c87a867e2702d15ee4da2d159fb40eaac6fbe"
+    },
+    {
+      "path": "CEST_Studio/README.md",
+      "size": 66806,
+      "sha256": "dc740819944fa4b811cba05055f184f23039018d7b2460577dbf266ebf790c9e"
+    },
+    {
+      "path": "CEST_Studio/tools/apply_update.py",
+      "size": 16173,
+      "sha256": "b0b2d0bf48dd60c65c40971c8d9b7f7fddc24cf91b2b315a3bb129ac26dc86b9"
+    },
+    {
+      "path": "CEST_Studio/tools/validate_chain.py",
+      "size": 2722,
+      "sha256": "d878b50100ef07f709d32924daa6df87d8f6d5ccab5b94b759f6e1b2b1f80c7a"
+    },
+    {
+      "path": "CEST_Studio/tools/validate_display.py",
+      "size": 5285,
+      "sha256": "3026c71f55c706e0a9e19f8c969dfc35aa18c17d83b301d9b2bc76cae8065270"
+    },
+    {
+      "path": "CEST_Studio/tools/validate_group.py",
+      "size": 2756,
+      "sha256": "cc22087ed8dd2a2dc63f72e94d3a51a4e70fb49631ff40b0934b83b61d28052f"
+    },
+    {
+      "path": "CEST_Studio/tools/validate_ld.py",
+      "size": 10079,
+      "sha256": "b29b336265847529e2d2eb0878e359bd519e0ecf0eca65567b8d3be55acbf353"
+    },
+    {
+      "path": "CEST_Studio/tools/validate_mask.py",
+      "size": 8560,
+      "sha256": "c4746897cc67e70d68c14f01960090fcb11c7fa97c0342f26f17d16e6b25a658"
+    },
+    {
+      "path": "CEST_Studio/tools/validate_prf_analysis.py",
+      "size": 7829,
+      "sha256": "f75e91f6f36c87dbc3e5643ada7a3ed4d9ead269e4d735c8a1f3a4679039aa3d"
+    },
+    {
+      "path": "CEST_Studio/tools/validate_prf_extract.py",
+      "size": 5897,
+      "sha256": "b48c1a61c136f8bb3fb92bac7ff9cb85eb1d2ce592461fde594ab10945b86fbd"
+    },
+    {
+      "path": "CEST_Studio/tools/validate_roi.py",
+      "size": 10974,
+      "sha256": "6c0b2f206baf234e9d99507d29ab1034e22aaafb61d7610532cc1dc8303bab29"
+    },
+    {
+      "path": "CEST_Studio/tools/validate_roi_curve.py",
+      "size": 6711,
+      "sha256": "16a669d27a91c45194bd5828767ffdbc0ef993e65dad436b6a6cbfbd745600a6"
+    },
+    {
+      "path": "CEST_Studio/tools/validate_roi_layers.py",
+      "size": 8408,
+      "sha256": "6362674bb03e5dbddfeac2d6ac36dbcc6d527d382b8fb0429fa0db0e15a616dc"
+    },
+    {
+      "path": "CEST_Studio/VERSION",
+      "size": 7,
+      "sha256": "eb8d72a2c4783965876f89d494d6ecdd3502c814e0229d50cea66eb65169856d"
+    },
+    {
+      "path": "CEST_Studio/启动.bat",
+      "size": 125,
+      "sha256": "878bb2b73355db387764e7e6aed0d84c526288cbb806ba6da01bbd035093e4d5"
+    },
+    {
+      "path": "CEST_Studio/启动.vbs",
+      "size": 2558,
+      "sha256": "f583bba43195f886a15405f3fd7c3525a2b1ed371ed622be543e8dab49043a2f"
+    },
+    {
+      "path": "CEST_Studio/启动_调试（带控制台）.bat",
+      "size": 1712,
+      "sha256": "89f1c91fd261652a5ef93513b02882810976ece1b10591cc5253d2d9b5999441"
+    },
+    {
+      "path": "CEST_Studio/手动使用说明_②多层图谱展示.md",
+      "size": 4867,
+      "sha256": "c2992f29b0eb95a5786aca57bbeaf4090fd880b1c9952dce7cda355b27d7d979"
+    },
+    {
+      "path": "CEST_Studio/手动使用说明_④逐体素LD.md",
+      "size": 6144,
+      "sha256": "1134c5ccde121f1bc93fba28a7fa7d24a2b2a3f9da0867e2cb6ab8762b207009"
+    },
+    {
+      "path": "CEST_Studio/手动使用说明_⑧去噪掩模.md",
+      "size": 21721,
+      "sha256": "652c080a5beb49bd02138735f4c1831f394659d6c77346ac787ba177cde2dacf"
+    },
+    {
+      "path": "03_Python_全链路/函数库/cest_display.py",
+      "size": 20966,
+      "sha256": "eeefab90fb826b07618afc7fb6b60a7c152e1a1df0752afffc7a0ca65dd1e98f"
+    },
+    {
+      "path": "03_Python_全链路/函数库/cest_group.py",
+      "size": 6988,
+      "sha256": "e150d8c7c0528979bf85f1bb675d358d0c5844eaebe9ee2258aabd655a68ef20"
+    },
+    {
+      "path": "03_Python_全链路/函数库/cest_io.py",
+      "size": 11866,
+      "sha256": "fe4d8665cc6a96882c38ddb9025b9d32db1d7dd8a9672ca8a832d0da83e38206"
+    },
+    {
+      "path": "03_Python_全链路/函数库/cest_ld.py",
+      "size": 29035,
+      "sha256": "e776e5c8a793b4909583fc188c294b1d443b0f3313bd8ce42d4d1bfecc04e8bb"
+    },
+    {
+      "path": "03_Python_全链路/函数库/cest_post.py",
+      "size": 27029,
+      "sha256": "61a5c544f65b8d978236fc3c84c3459ea94c995a484b389ea19daa52dc516b16"
+    },
+    {
+      "path": "03_Python_全链路/函数库/cest_recon.py",
+      "size": 32228,
+      "sha256": "935a79d86e2b917036dee3b704104e008f8f103a2e972724b932f940ce1a32a6"
+    },
+    {
+      "path": "03_Python_全链路/函数库/cest_roi.py",
+      "size": 19166,
+      "sha256": "c6e1e1e8b1576b5010d4fe5b9f0a4259969c77cb0dd72c92f5a26abc14418758"
+    },
+    {
+      "path": "03_Python_全链路/函数库/dicom_order.py",
+      "size": 11299,
+      "sha256": "e69886d38fc35e93eaa5ff5c38153ab12593ad48bd61fcd00a70dd5835a4b876"
+    },
+    {
+      "path": "03_Python_全链路/函数库/prf_analysis.py",
+      "size": 25028,
+      "sha256": "ffb879ef9cd8433cf420312ad5c9c2c64e6ce5d15a692f276795214607effc69"
+    },
+    {
+      "path": "03_Python_全链路/函数库/prf_extract.py",
+      "size": 27580,
+      "sha256": "0975c1e4e41f9785d92fdbcfc20ac739039483c338ace0ef3f70534716f5308c"
+    },
+    {
+      "path": "03_Python_全链路/函数库/run_log.py",
+      "size": 1443,
+      "sha256": "61edd98895f7f32a6a779a0de16a561075cd8f8eaf64175906919e34fb8ad1c5"
+    }
+  ]
+}
