@@ -85,6 +85,11 @@ class ModulePage(QWidget):
         b_re = QPushButton('重新识别')
         b_re.clicked.connect(lambda: self.window.re_detect())
         head.addWidget(b_re, 0)
+        # 智能体：全局一个窗口，带当前模块 + 当前病例 + 当前输入目录
+        self.b_agent = QPushButton('智能体')
+        self.b_agent.setToolTip('打开智能体窗口（只跑本页，或串整条链）')
+        self.b_agent.clicked.connect(self._on_agent)
+        head.addWidget(self.b_agent, 0)
         root.addLayout(head)
 
         # ---- 数据链：本页输入根 → 自动解析（病例 / 数据 / 掩模）----
@@ -407,6 +412,15 @@ class ModulePage(QWidget):
         return p
 
     # ------------------------------------------------------- 识别/预览刷新
+    def _on_agent(self):
+        """打开智能体窗口（全局唯一），带当前模块 / 病例 / 输入目录。"""
+        try:
+            self.window.open_agent(self.module.id,
+                                   getattr(self, '_chain_case', '') or '')
+        except Exception as e:                           # noqa: BLE001
+            QMessageBox.warning(self, '智能体打不开',
+                                f'{type(e).__name__}: {e}')
+
     def attach(self, det, proj):
         """识别结果或输出目录变化时刷新本页。"""
         if det is not None:

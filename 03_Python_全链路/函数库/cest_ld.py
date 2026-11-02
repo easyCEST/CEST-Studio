@@ -77,7 +77,10 @@ def normalize_spect0916(data, tol=0.05, p_low=1, p_high=99, do_rescale=True):
     med = s[max(0, _round_half_up(n * 50 / 100) - 1)]
 
     if not (hi > lo):
+        # 退化输入（全常数 / 单值）：返回结构必须与正常分支同构，
+        # 否则调用方 info["nClipLow"] 会 KeyError（例如全 1 的合成数据）。
         return np.zeros_like(data), dict(scaled=False, lo=lo, hi=hi, median=med,
+                                         nClipLow=0, nClipHigh=0,
                                          reason='degenerate')
     already = (lo >= -tol) and (hi <= 1 + tol)
     scaled = (not already) and do_rescale

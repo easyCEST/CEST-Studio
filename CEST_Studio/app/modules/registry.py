@@ -33,6 +33,10 @@ ALL = (
 
 BY_ID = {m.id: m for m in ALL}
 
+# 注：⑨ 智能体是**独立目录**（cest-agent）里的可选页，不在这个表里——
+# 它的页面由 main_window 单独创建（不是 ModulePage），装了才出现在导航里。
+# 这样交付包不带 cest-agent 时，这里一行 import 都不会碰到它。
+
 
 def get(mid: str):
     return BY_ID.get(mid)

@@ -96,3 +96,32 @@ def version() -> str:
         except OSError:
             pass
     return ''
+
+
+# ---------------------------------------------------------------- ⑨ 智能体
+# 智能体是**独立目录**（和 cest-gui 平级的 cest-agent），是可选的：
+# 装了 → 左侧多一页「⑨ 智能体」；没装 → 一切照旧，绝不报错。
+def agent_candidates() -> list:
+    c = []
+    env = os.environ.get('CEST_AGENT_HOME', '').strip()
+    if env:
+        c.append(Path(env))
+    c += [
+        _ROOT.parent / 'cest-agent',          # 平级（默认布局）
+        _ROOT / 'cest-agent',                 # 塞在 cest-gui 里（不推荐，但能用）
+    ]
+    return c
+
+
+def install_agent() -> Path | None:
+    """把 cest-agent 挂进 sys.path；返回它的根目录，没装就返回 None。"""
+    for d in agent_candidates():
+        try:
+            if (d / 'cest_agent' / 'gui_page.py').is_file():
+                p = str(d)
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+                return d
+        except OSError:
+            continue
+    return None

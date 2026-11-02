@@ -27,6 +27,10 @@ from detect import chain
 from detect.scanner import Detection, detect
 from jobs.ctx import JobContext
 
+# 智能体能单独跑的模块（⑧ 要手画掩模，不作为可执行模块带进去）
+_AGENT_MODULES = ('m_import', 'm1_recon', 'm3_post', 'm4_ld', 'm5_prf',
+                  'm6_prf_analysis', 'm2_display', 'm0_check')
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -136,6 +140,20 @@ class MainWindow(QMainWindow):
         for m in registry.ALL:
             self.nav.addItem(QListWidgetItem(f'{m.badge} {m.title}'))
             self.pages.addWidget(ModulePage(m, self))
+        # 智能体（可选，独立目录 cest-agent）：全局一个窗口，不占导航页。
+        # ★ 此时底部 log_panel 还没建好，只能 print（否则 AttributeError）
+        self.agent_ready = False
+        try:
+            _agent_home = core_path.install_agent()
+            if _agent_home is not None:
+                from cest_agent.gui_page import open_agent      # noqa: F401
+                self.agent_ready = True
+                print(f'[智能体] 已接入：{_agent_home}')
+            else:
+                print('[智能体] 未检测到 cest-agent（不影响其它功能）')
+        except Exception as _e:                          # noqa: BLE001
+            print(f'[智能体] 加载失败（已跳过）：{type(_e).__name__}: {_e}')
+        self._agent_win = None
         mid.addWidget(self.nav)
         mid.addWidget(self.pages)
         mid.setStretchFactor(0, 0)
@@ -260,7 +278,7 @@ class MainWindow(QMainWindow):
             self.out_edit.setText(d)
 
     def _on_nav(self, row):
-        if row < 0:
+        if row < 0 or row >= len(registry.ALL):
             return
         self.pages.setCurrentIndex(row)
         m = registry.ALL[row]
@@ -301,9 +319,12 @@ class MainWindow(QMainWindow):
         self._apply_input_ui(self.det)
         self.refresh_modules()
         w = self.pages.currentWidget()
-        w.refresh_chain()
-        w.refresh_preview(self.proj())
-        w.refresh_extra()
+        if hasattr(w, 'refresh_chain'):
+            w.refresh_chain()
+        if hasattr(w, 'refresh_preview'):
+            w.refresh_preview(self.proj())
+        if hasattr(w, 'refresh_extra'):
+            w.refresh_extra()
 
     # ------------------------------------------------------------ 公共方法
     def proj(self) -> str:
@@ -321,6 +342,28 @@ class MainWindow(QMainWindow):
             if m.id == mid:
                 self.nav.setCurrentRow(i)
                 return
+
+    def open_agent(self, mid=None, case=None):
+        """打开智能体窗口（全局唯一，复用）。mid/case 作为起点带进去。"""
+        if not self.agent_ready:
+            QMessageBox.information(
+                self, '没装智能体',
+                '没检测到 cest-agent 目录。\n'
+                '把 cest-agent 放在 cest-gui 旁边（平级）就能用。')
+            return None
+        try:
+            from cest_agent.gui_page import open_agent as _open
+        except Exception as e:                           # noqa: BLE001
+            QMessageBox.warning(self, '智能体加载失败',
+                                f'{type(e).__name__}: {e}')
+            return None
+        mid = mid or self.current_id()
+        if mid not in _AGENT_MODULES:
+            mid = None
+        # 当前模块的输入根 / 当前 PROJ 一起带过去
+        src = self.input_root_for(mid) if mid else ''
+        return _open(self, mid=mid, case=case or '', src=src,
+                     proj=self.proj())
 
     def set_input(self, path: str, confirm: bool = True, mid=None):
         path = str(path).strip()
@@ -387,7 +430,10 @@ class MainWindow(QMainWindow):
         for i in range(self.pages.count()):
             w = self.pages.widget(i)
             if hasattr(w, 'reset'):
-                w.reset()
+                try:
+                    w.reset()
+                except Exception:                        # noqa: BLE001
+                    pass
         self._cfg = dict(settings.DEFAULTS)
         settings.save(self._cfg)
         self.refresh_modules()
