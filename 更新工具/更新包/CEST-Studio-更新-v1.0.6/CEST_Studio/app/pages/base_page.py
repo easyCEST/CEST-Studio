@@ -85,6 +85,11 @@ class ModulePage(QWidget):
         b_re = QPushButton('重新识别')
         b_re.clicked.connect(lambda: self.window.re_detect())
         head.addWidget(b_re, 0)
+        # 智能体：全局一个窗口，带当前模块 + 当前病例 + 当前输入目录
+        self.b_agent = QPushButton('智能体')
+        self.b_agent.setToolTip('打开智能体窗口（只跑本页，或串整条链）')
+        self.b_agent.clicked.connect(self._on_agent)
+        head.addWidget(self.b_agent, 0)
         root.addLayout(head)
 
         # ---- 数据链：本页输入根 → 自动解析（病例 / 数据 / 掩模）----
@@ -189,7 +194,8 @@ class ModulePage(QWidget):
         g_p.setMinimumWidth(330)
         tv.addWidget(g_p)
         # 影响「计划」的参数一变就重新分析
-        for _k in ('src', 'cases', 'case', 'seq_base', 'slice_max', 'm0_tpi'):
+        for _k in ('src', 'cases', 'case', 'seq_base', 'slice_max', 'm0_tpi',
+                   'caxis_mode', 'mode', 'organ'):
             _w = self.widgets.get(_k)
             if _w is None:
                 continue
@@ -339,6 +345,21 @@ class ModulePage(QWidget):
             if getattr(f, 'dyn', False):
                 self.dyn_widgets[f.key] = w
             return w
+        if f.kind == 'range':
+            # 只读显示 `起点:步长:终点` + 【设置…】弹窗（三个数字分开填，少打错）
+            box = QWidget()
+            h = QHBoxLayout(box)
+            h.setContentsMargins(0, 0, 0, 0)
+            e = QLineEdit('' if f.default is None else str(f.default))
+            e.setReadOnly(True)
+            e.setPlaceholderText('未设置 → 点【设置…】')
+            b = QPushButton('设置…')
+            b.setObjectName('pick')
+            b.clicked.connect(lambda _=False, ed=e: self._pick_range(ed))
+            h.addWidget(e, 1)
+            h.addWidget(b)
+            box._edit = e                                       # 便于取值
+            return box
         if f.kind in ('dir', 'file'):
             box = QWidget()
             h = QHBoxLayout(box)
@@ -357,6 +378,14 @@ class ModulePage(QWidget):
         if f.kind == 'cases':
             w.setPlaceholderText('如 c1,c2,c3,h1,h2,h3,hp1,hp2,hp3')
         return w
+
+    def _pick_range(self, edit):
+        """频偏：弹「起始 / 步长 / 终点」输入框，回写成一行的 起点:步长:终点。"""
+        from app.dialogs.range_dialog import RangeDialog
+        dlg = RangeDialog(self, edit.text())
+        if dlg.exec():
+            edit.setText(dlg.spec())
+            self.refresh_extra()
 
     def _pick(self, edit, kind):
         if kind == 'dir':
@@ -407,6 +436,15 @@ class ModulePage(QWidget):
         return p
 
     # ------------------------------------------------------- 识别/预览刷新
+    def _on_agent(self):
+        """打开智能体窗口（全局唯一），带当前模块 / 病例 / 输入目录。"""
+        try:
+            self.window.open_agent(self.module.id,
+                                   getattr(self, '_chain_case', '') or '')
+        except Exception as e:                           # noqa: BLE001
+            QMessageBox.warning(self, '智能体打不开',
+                                f'{type(e).__name__}: {e}')
+
     def attach(self, det, proj):
         """识别结果或输出目录变化时刷新本页。"""
         if det is not None:

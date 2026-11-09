@@ -34,6 +34,25 @@ INTERP_FILES = ('0.7ut_img_interp.mat', '0p7P_interp.mat',
 MASK_NAMES = ('Mask', 'mask', 'Thmask', 'liverMask', 'snrMask', 'SnrMask')
 
 
+def organ_key(organ: str) -> str:
+    """器官/组织掩模的变量名与文件名主干：部位名 + ROIMask（如 liver → liverROIMask）。
+
+    ★ 为什么不是 `<部位>Mask`：真实数据里常有 `brainMask.mat`（内容是别的口径），
+      拼成 brainMask 就会撞名不同义。ROIMask 后缀不会与既有的撞。
+    """
+    o = str(organ or '').strip() or 'liver'
+    for ch in '<>:"/\\|?*':
+        o = o.replace(ch, '_')
+    return f'{o}ROIMask'
+
+
+def organ_mask_names(organ: str) -> tuple:
+    """读掩模时认的所有器官掩模变量名（新的在前，旧的 liverMask 兜底）。"""
+    k = organ_key(organ)
+    out = [k, 'liverMask', 'liverROIMask']
+    return tuple(dict.fromkeys([x for x in out if x]))
+
+
 class ROIModule(Module):
     id = 'm_roi'
     badge = '⑧'
@@ -66,10 +85,15 @@ class ROIModule(Module):
               tip='留空 = 有效值 95% 分位（同 MATLAB）；只影响观感'),
         # ---- 掩模（SNR / 噪声区）----
         Field('snr', 'SNR 系数', 'float', 15.0, tip='MATLAB 默认 15（信号 > 15σ）'),
+        Field('organ', '部位名（器官掩模）', 'text', 'liver',
+              tip='这张器官/组织掩模是哪个部位：liver / brain / kidney …（随你，看实际情况）\n'
+                  '写盘：最终掩模恒为 Mask.mat（下游只认这个名字）；'
+                  '器官掩模另存 <部位>ROIMask.mat（如 liverROIMask.mat）'),
         Field('noise_sigma', '噪声 σ（0=用画的噪声区）', 'float', 0.0,
               tip='画布里画了「噪声区」就填 0；要复现 MATLAB 旧结果可直接填它算出的 σ'),
-        Field('mask_file', '载入已有掩模 .mat', 'file', '',
-              tip='填了就走「拷现成掩模」，不再用画布；可含 Mask / Thmask / liverMask / snrMask'),
+        Field('mask_file', '已载入掩模来源', 'file', '',
+              tip='填了就走「拷现成掩模」，不再用画布；可含 Mask / Thmask / liverMask / snrMask。\n'
+                  '用【载入已有掩模…】选目录时会自动填（同一套掩模常分散在多个 .mat 里）'),
         Field('dpi', '确认图分辨率', 'int', 150),
     )
 
@@ -240,7 +264,7 @@ class ROIModule(Module):
                     return Lm
                 return Lm & (_flat2d(np.asarray(snr)) > 0)
         if self._loaded:
-            for k in ('Mask', 'mask', 'Thmask', 'liverMask'):
+            for k in ('Mask', 'mask', 'Thmask') + organ_mask_names(p.get('organ')):
                 v = self._loaded.get(k)
                 if v is not None:
                     return _flat2d(np.asarray(v)) > 0
@@ -249,7 +273,7 @@ class ROIModule(Module):
             d = R.find_subdir(proj, '00_roi') or Path(proj) / '00_掩模'
             f = Path(d) / case / 'Mask.mat'
             if f.exists():
-                got = load_mat(f, ['Mask', 'mask', 'Thmask', 'liverMask'])
+                got = load_mat(f, ['Mask', 'mask', 'Thmask'])
                 if got:
                     return _flat2d(np.asarray(list(got.values())[0])) > 0
         return None
@@ -267,12 +291,16 @@ class ROIModule(Module):
         d = R.find_subdir(proj, '00_roi') or Path(proj) / '00_掩模'
         d = Path(d) / case
         out = {}
-        fl = d / 'liverMask.mat'
+        okey = organ_key(p.get('organ'))
+        fl = d / f'{okey}.mat'
+        if not fl.exists():
+            fl = d / 'liverMask.mat'
         fm = d / 'Mask.mat'
         if fl.exists():
-            got = load_mat(fl, ['liverMask'])
-            if got.get('liverMask') is not None:
-                out['liverMask'] = np.asarray(got['liverMask'], dtype=float)
+            got = load_mat(fl, [okey, 'liverMask'])
+            v = got.get(okey, got.get('liverMask'))
+            if v is not None:
+                out['liverMask'] = np.asarray(v, dtype=float)
         elif fm.exists():
             got = load_mat(fm, ['Mask', 'mask', 'Thmask'])
             v = got.get('Mask', got.get('mask', got.get('Thmask')))
@@ -422,26 +450,88 @@ class ROIModule(Module):
 
     # ================================================================ 载入
     def _load_masks(self, page):
-        from PySide6.QtWidgets import QFileDialog
+        """选一个目录（或多个 .mat）→ 自动找出里面所有掩模并合并成一套。
+
+        一套完整掩模通常分散在 Mask.mat / Thmask.mat / liverMask.mat / snrMask.mat，
+        所以这里按目录递归找、逐个读变量、**合并**（先到先得，不覆盖已有同名变量）。
+        """
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
         from cest_io import load_mat
         p = page.params()
         start = str(p.get('src') or '') or page.window.proj() or ''
-        f, _ = QFileDialog.getOpenFileName(page, '选择掩模 .mat（Mask / Thmask / liverMask / snrMask）',
-                                          start, 'MAT (*.mat);;所有文件 (*)')
+        # 第一下给目录选择框；想挑单文件的话用「文件」按钮（菜单里也能选）
+        d = QFileDialog.getExistingDirectory(page, '选择掩模所在目录（自动找出其中的 Mask / Thmask / liverMask / snrMask）', start)
+        if not d:
+            return
+        root = Path(d)
+        files = sorted(root.rglob('*.mat'))
+        if not files:
+            page.window.log(f'⑧ 目录里没有 .mat：{root}')
+            QMessageBox.information(page, '没有 .mat', f'{root}\n下面没找到 .mat 文件。')
+            return
+
+        merged: dict = {}
+        where: dict = {}
+        names = list(MASK_NAMES) + [organ_key(p.get('organ'))]
+        for f in files:
+            try:
+                got = load_mat(str(f), names)
+            except Exception as e:                               # noqa: BLE001
+                page.window.log(f'⑧ 跳过 {f.name}：{type(e).__name__}: {e}')
+                continue
+            for k, v in (got or {}).items():
+                if k in merged:                                  # 已有同名 → 不覆盖
+                    continue
+                merged[k] = np.asarray(v, dtype=float)
+                where[k] = str(f)
+        if not merged:
+            page.window.log(f'⑧ 目录里没有掩模变量（{"/".join(names)}）：{root}')
+            QMessageBox.warning(
+                page, '没找到掩模',
+                f'{root} 及其子目录里共 {len(files)} 个 .mat，\n'
+                f'但都没有 {" / ".join(names)} 这些变量。')
+            return
+
+        self._loaded = merged
+        self._loaded['_file'] = where.get('Mask') or next(iter(where.values()))
+        self._draw = None
+        page._set('mask_file', self._loaded['_file'])
+        page.window.log(f'⑧ 载入掩模（目录 {root}，扫了 {len(files)} 个 .mat）：')
+        for k, f in where.items():
+            page.window.log(f'     {k}{merged[k].shape} ← {Path(f).name}')
+        miss = [n for n in names if n not in merged]
+        if miss:
+            page.window.log(f'     没找到：{"、".join(miss)}（有哪个用哪个，缺的可用画布补）')
+        page.refresh_extra()
+        page.refresh_preview(page.window.proj())
+
+    def _load_mask_file(self, page):
+        """挑单个 .mat（只在确实只有一个文件时用；合并请走【载入已有掩模…】）。"""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        from cest_io import load_mat
+        p = page.params()
+        start = str(p.get('src') or '') or page.window.proj() or ''
+        f, _ = QFileDialog.getOpenFileName(
+            page, '选择掩模 .mat（Mask / Thmask / liverMask / snrMask）',
+            start, 'MAT (*.mat);;所有文件 (*)')
         if not f:
             return
         got = load_mat(f, list(MASK_NAMES))
         if not got:
             page.window.log(f'⑧ 载入失败：{Path(f).name} 里没有 Mask/Thmask/liverMask/snrMask')
-            from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(page, '载入失败',
                                 f'{Path(f).name} 里没找到 Mask / Thmask / liverMask / snrMask。')
             return
-        self._loaded = {k: np.asarray(v, dtype=float) for k, v in got.items()}
+        # 单个文件也走合并：已载入的其它变量保留
+        base = dict(self._loaded or {})
+        base.pop('_file', None)
+        for k, v in got.items():
+            base.setdefault(k, np.asarray(v, dtype=float))
+        self._loaded = base
         self._loaded['_file'] = f
         self._draw = None
         page._set('mask_file', f)
-        page.window.log(f'⑧ 载入掩模：{f} → '
+        page.window.log(f'⑧ 载入掩模：{Path(f).name} → '
                         + '、'.join(f'{k}{np.asarray(v).shape}'
                                     for k, v in self._loaded.items() if k != '_file'))
         page.refresh_extra()
@@ -454,17 +544,18 @@ class ROIModule(Module):
         proj = page.window.proj()
         cands = []
         src = str(p.get('src') or '').strip()
+        okey = organ_key(p.get('organ'))
         if src:
             s = Path(src)
             d0 = s if s.is_dir() else s.parent
-            cands += [d0 / 'Mask.mat', d0 / 'liverMask.mat', d0 / 'Thmask.mat',
-                      d0.parent / 'Mask.mat', d0.parent / 'liverMask.mat',
-                      d0.parent / 'Thmask.mat']
+            for dd in (d0, d0.parent):
+                cands += [dd / 'Mask.mat', dd / f'{okey}.mat', dd / 'liverMask.mat',
+                          dd / 'Thmask.mat', dd / 'snrMask.mat']
         case = self._case_of(p)
         if proj and case:
             _rd = R.find_subdir(proj, '00_roi') or Path(proj) / '00_掩模'
-            cands += [_rd / case / 'Mask.mat', _rd / case / 'liverMask.mat',
-                      _rd / case / 'Thmask.mat']
+            cands += [_rd / case / 'Mask.mat', _rd / case / f'{okey}.mat',
+                      _rd / case / 'liverMask.mat', _rd / case / 'Thmask.mat']
         found = [c for c in cands if c.exists()]
         if not found:
             page.window.log('⑧ 输入目录和 PROJ 里都没找到 Mask.mat / liverMask.mat / Thmask.mat。')
@@ -521,7 +612,8 @@ class ROIModule(Module):
         d = self.out_dir_for(p, proj)
         if not d:
             return []
-        files = [str(d / x) for x in ('Mask.mat', 'Thmask.mat', 'liverMask.mat',
+        files = [str(d / x) for x in ('Mask.mat', 'Thmask.mat',
+                                      f'{organ_key(p.get("organ"))}.mat',
                                       'snrMask.mat', 'roi_meta.json', 'mask_check.png')]
         nroi = int(p.get('nroi') or 0)
         if nroi >= 1:
@@ -568,8 +660,10 @@ class ROIModule(Module):
         if loaded:
             ctx.log(f'  用载入的掩模：{dict((k, np.asarray(v).shape) for k, v in loaded.items())}')
             final = loaded.get('Mask', loaded.get('mask'))
-            if loaded.get('liverMask') is not None:
-                liver = loaded['liverMask']
+            for _k in organ_mask_names(p.get('organ')):
+                if loaded.get(_k) is not None:
+                    liver = loaded[_k]
+                    break
             if loaded.get('snrMask') is not None:
                 snr_m = loaded['snrMask']
             elif loaded.get('Thmask') is not None and final is None:
@@ -633,10 +727,10 @@ class ROIModule(Module):
             final = snr_m
         if final is None:
             if liver is None:
-                raise RuntimeError('没有 liverMask：去噪掩模 = liverMask × snrMask，'
-                                   '组织/肝脏那张必须有。')
+                raise RuntimeError('没有器官掩模：去噪掩模 = 器官掩模 × snrMask，'
+                                   '组织那张必须有。')
             final = _combine(liver, snr_m, n_layer)
-            ctx.log(f'  最终掩模 = liverMask{np.asarray(liver).shape} × '
+            ctx.log(f'  最终掩模 = 器官掩模{np.asarray(liver).shape} × '
                     f'snrMask{np.asarray(snr_m).shape} → {final.shape}，'
                     f'有效体素 {int((final > 0).sum())}')
         else:
@@ -650,11 +744,14 @@ class ROIModule(Module):
         #   ④ 逐体素LD 读 3D 时取第 1 层（与 2D 完全等价），③ 后处理用的是 liverMask 那张。
         mask3 = _as_layer3d(final, n_layer)
         stamp = time.strftime('%Y%m%d_%H%M%S')
+        okey = organ_key(p.get('organ'))
         written = []
         for name, payload in (('Mask.mat', {'Mask': mask3, 'axis_order': 'layer_freq'}),
                               ('Thmask.mat', {'Thmask': mask3}),
-                              ('liverMask.mat', {'liverMask': liver}
+                              (f'{okey}.mat', {okey: liver}
                                if liver is not None else None),
+                              ('liverMask.mat', {'liverMask': liver}
+                               if (liver is not None and okey == 'liverROIMask') else None),
                               ('snrMask.mat', {'snrMask': snr_m}
                                if snr_m is not None else None)):
             if payload is None:

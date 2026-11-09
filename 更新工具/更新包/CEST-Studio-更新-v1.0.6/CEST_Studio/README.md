@@ -907,3 +907,17 @@ CEST_Studio\
 - **`CEST_Studio\VERSION` 永远等于「最近一次出包的版本号」**（出包时自动写进去，默认 +1）。
   出包前扫一眼：若它还停在老版本（例如已发出 1.0.1、本地还是 1.0.0），自动 +1 会再出一份 1.0.1，
   老用户会被「没什么可更新」挡住 —— 这种情况用 `--version 1.0.2` 明确指定新版本号。
+
+### 7.2.1 GitHub 发布入口（2026-10-20，v1.0.4 起）
+
+- 仓库：<https://github.com/easyCEST/CEST-Studio> ；最新版页面 `…/releases/latest`。
+- **老用户（装过任意 v1.0.x）只下 `CEST-Studio-UpdateTool-vX.Y.Z.zip`** —— 它就是本机 `更新工具\` 的压缩包
+  （约 0.4 MB，里面自带该版本更新包），解压进 cest-gui → 双击 `应用更新.bat` → 关窗重开。
+- **新用户**下 v1.0.0 的 `CEST-Studio-v1.0.0-win64.zip`（约 470 MB 解压后），再用更新工具逐版升级。
+- 打包方式：开发端手动把 `cest-gui\更新工具\` 压成 zip（**脚本不产压缩包、不弹窗**，压缩前先把
+  `更新工具\更新包\` 下的 `_bak_*` 老包挪走，免得包变胖）。
+- ⚠ **坑：GitHub 会把 release 附件名里的非 ASCII 字符替换成 `.`**。中文名上传后变成
+  `CEST-Studio-.-v1.0.4.zip`（改名 PATCH 也一样被替换），所以附件名必须 ASCII（`UpdateTool`），
+  中文只能写在附件的 `label` 字段里（label 保留中文）。
+- ⚠ **坑：`git credential fill` 在 `powershell -File` 子脚本里喂不进去**（返回空 → `missing protocol field`）。
+  同一个管道在当前会话里是好的。发布脚本改成：当前会话取好 token → `$env:CEST_GH_TOKEN` 传给子脚本。

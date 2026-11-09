@@ -194,7 +194,8 @@ class ModulePage(QWidget):
         g_p.setMinimumWidth(330)
         tv.addWidget(g_p)
         # 影响「计划」的参数一变就重新分析
-        for _k in ('src', 'cases', 'case', 'seq_base', 'slice_max', 'm0_tpi'):
+        for _k in ('src', 'cases', 'case', 'seq_base', 'slice_max', 'm0_tpi',
+                   'caxis_mode', 'mode', 'organ'):
             _w = self.widgets.get(_k)
             if _w is None:
                 continue
@@ -344,6 +345,21 @@ class ModulePage(QWidget):
             if getattr(f, 'dyn', False):
                 self.dyn_widgets[f.key] = w
             return w
+        if f.kind == 'range':
+            # 只读显示 `起点:步长:终点` + 【设置…】弹窗（三个数字分开填，少打错）
+            box = QWidget()
+            h = QHBoxLayout(box)
+            h.setContentsMargins(0, 0, 0, 0)
+            e = QLineEdit('' if f.default is None else str(f.default))
+            e.setReadOnly(True)
+            e.setPlaceholderText('未设置 → 点【设置…】')
+            b = QPushButton('设置…')
+            b.setObjectName('pick')
+            b.clicked.connect(lambda _=False, ed=e: self._pick_range(ed))
+            h.addWidget(e, 1)
+            h.addWidget(b)
+            box._edit = e                                       # 便于取值
+            return box
         if f.kind in ('dir', 'file'):
             box = QWidget()
             h = QHBoxLayout(box)
@@ -362,6 +378,14 @@ class ModulePage(QWidget):
         if f.kind == 'cases':
             w.setPlaceholderText('如 c1,c2,c3,h1,h2,h3,hp1,hp2,hp3')
         return w
+
+    def _pick_range(self, edit):
+        """频偏：弹「起始 / 步长 / 终点」输入框，回写成一行的 起点:步长:终点。"""
+        from app.dialogs.range_dialog import RangeDialog
+        dlg = RangeDialog(self, edit.text())
+        if dlg.exec():
+            edit.setText(dlg.spec())
+            self.refresh_extra()
 
     def _pick(self, edit, kind):
         if kind == 'dir':

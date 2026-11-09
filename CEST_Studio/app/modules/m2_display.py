@@ -38,8 +38,94 @@ CACHE_FILE = '0.7ut_img_interp.mat'
 OUT_EXTS = ('.png', '.mat', '.json')
 
 
+CAXIS_DOC = {
+    'manual': '你给的固定上下限（留空按图类型常开口径），各层各频率共用 → 跨病例能横向比',
+    'per_layer_5_95': '逐层算非零体素 5~95% 再取并集 → 层间亮度差大时用，不会某层过曝',
+    'global_5_95': '所有展示层混在一起算 5~95% → 最省事，但高值多的层会压低其余层对比度',
+}
+
+
+def caxis_text(mode='') -> str:
+    """当前色标策略的一句话说明（只显示选中的那条）。"""
+    m = str(mode or 'manual').strip()
+    return f'色标：{m} —— ' + CAXIS_DOC.get(m, '未知策略')
+
+
+def _read_w(path):
+    """读 w_offset.mat / w.mat 里的频偏（只读这一个变量）。没有就 None。"""
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        from cest_io import load_first
+        v = load_first(p, DIM_W_VARS)
+        return None if v is None else np.asarray(v, float).ravel()
+    except Exception:                                            # noqa: BLE001
+        return None
+
+
 def _has_interp(d: Path) -> bool:
     return any((d / f).exists() for f in INTERP_FILES)
+
+
+# ---- 维度说明：只读文件头，不加载数据 ----
+DIM_VARS = ('img_interp', '0.7ut_img_interp', 'ssat', 'norm_z', 'normZ',
+            'zspect', 'zspect_dataavecorrect', 's0', 'S0')
+DIM_W_VARS = ('w_offset', 'w', 'freq_seq', 'freq')
+
+
+def probe_dims(path):
+    """→ ((X, Y, 层[, 频]), 变量名)。只读 shape：v7 走 whosmat，v7.3 走 h5py。"""
+    p = str(path)
+    got = {}
+    try:
+        from cest_io import is_v73
+        if is_v73(p):
+            import h5py
+            with h5py.File(p, 'r') as f:
+                for k in f.keys():
+                    if k.startswith('#'):
+                        continue
+                    sh = getattr(f[k], 'shape', None)
+                    if sh:
+                        got[k] = tuple(int(x) for x in reversed(sh))   # MATLAB 轴序
+        else:
+            from scipy.io import whosmat
+            got = {n: tuple(int(x) for x in s) for n, s, _c in whosmat(p)}
+    except Exception:                                            # noqa: BLE001
+        return None, ''
+    for n in DIM_VARS:
+        if len(got.get(n, ())) >= 3:
+            return got[n], n
+    for n, sh in got.items():
+        if len(sh) >= 3:
+            return sh, n
+    return None, ''
+
+
+def dims_text(shape, layers_sel=''):
+    """(X,Y,层[,频]) → 「224 × 176（X × Y）　32 层　241 个频点」。"""
+    if not shape or len(shape) < 3:
+        return ''
+    x, y, nl = shape[0], shape[1], shape[2]
+    t = f'数据维度：{x} × {y}（X × Y）　{nl} 层'
+    if len(shape) >= 4:
+        t += f'　{shape[3]} 个频点'
+    s = str(layers_sel or '').strip()
+    if s:
+        n = len([v for v in s.replace('，', ',').split(',') if v.strip()])
+        if n:
+            t += f'　｜实际展示 {n} 层（{s}）'
+    return t
+
+
+def freq_text(w):
+    """频偏序列 → 「-12 ~ 12 ppm　步长 0.1　共 241 点」。"""
+    if w is None or len(w) < 2:
+        return '频偏：未找到 w_offset.mat（图谱按频点数出图，不依赖它）'
+    w = np.asarray(w, float).ravel()
+    st = float(np.median(np.diff(w)))
+    return (f'频偏：{w.min():g} ~ {w.max():g} ppm　步长 {st:g}　共 {w.size} 点')
 
 
 def is_recon_dir(d: Path) -> bool:
@@ -199,12 +285,18 @@ class DisplayModule(Module):
         Field('cols', '每行子图数', 'int', 5),
         Field('caxis_mode', '色标策略', 'choice', 'manual',
               ('manual', 'per_layer_5_95', 'global_5_95'),
-              tip='manual=照 MATLAB 手输；两种 5~95% 只作参考'),
+              tip='manual=你给的固定色标（留空按图类型常开口径），跨病例也能横向比；\n'
+                  'per_layer_5_95=逐层算非零体素 5~95% 再取并集，层间亮度差大时用；\n'
+                  'global_5_95=所有层混算 5~95%，最省事但高值层会压低其余层对比度'),
         Field('caxis_lo', '色标下限', 'float', '', tip='留空=按图类型用常用口径'),
         Field('caxis_hi', '色标上限', 'float', '', tip='留空=按图类型用常用口径'),
         Field('mask_file', '掩模文件', 'file', '',
               tip='留空=自动找 00_掩模\\<病例>\\Mask.mat（必填门禁），再找输入目录'),
         Field('use_mask', '用掩模压背景', 'bool', True, tip='口径 .*Mask - (~Mask)，背景强制 -1'),
+        Field('organ', '部位名（器官掩模）', 'text', 'liver', advanced=True,
+              group='掩模',
+              tip='器官/组织掩模是哪个部位（liver / brain / kidney…）。\n'
+                  '只在没有 Mask.mat、需要退回器官掩模时用到。'),
         Field('ld_mode', 'LD 正负', 'choice', 'POS', ('POS', 'NEG'), modes=('LD',),
               tip='LD 取 w_target（POS，看 NOE/-1.2 ppm 一带）/ -w_target（NEG）'),
         Field('layers', '层', 'text', '', tip='留空=全部层；如 1,3,5'),
@@ -255,8 +347,11 @@ class DisplayModule(Module):
         if proj and case:
             _rd = R.find_subdir(proj, '00_roi')
             if _rd:
+                _org = (str(p.get('organ') or '').strip() or 'liver')
+                _ok = _org + 'ROIMask'
                 cands.append((Path(_rd) / case / 'Mask.mat', '00_掩模\\Mask.mat'))
                 cands.append((Path(_rd) / case / 'mask.mat', '00_掩模\\mask.mat'))
+                cands.append((Path(_rd) / case / f'{_ok}.mat', f'00_掩模\\{_ok}.mat'))
                 cands.append((Path(_rd) / case / 'liverMask.mat', '00_掩模\\liverMask.mat'))
         for d in (src_dir,):
             if d:
@@ -394,10 +489,25 @@ class DisplayModule(Module):
             dp, dsrc = self._resolve_data(params, proj, case, src_dir)
             if dp:
                 lines.append(f'数据：{Path(dp).name}（{dsrc}）')
+                shape, vname = probe_dims(dp)
+                if shape:
+                    lines.append(dims_text(shape, params.get('layers')))
+                wv = None
+                if proj and case:
+                    _rd = R.find_subdir(proj, '01_recon')
+                    if _rd:
+                        wv = _read_w(Path(_rd) / case / 'w_offset.mat')
+                lines.append(freq_text(wv) if wv is not None
+                             else '频偏：未找到 w_offset.mat')
             elif src and is_recon_dir(src_dir):
                 lines.append(f'数据：待生成（首次出图会写 {CACHE_DIR}\\{CACHE_FILE}，之后复用）')
+                s0sh, _n = probe_dims(src_dir / 's0.mat')
+                if s0sh:
+                    lines.append(dims_text(s0sh, params.get('layers')))
+                lines.append(freq_text(_read_w(src_dir / 'w_offset.mat')))
             else:
                 lines.append('数据：× 没找到 img_interp')
+            lines.append(caxis_text(params.get('caxis_mode')))
         except Exception as e:                                   # noqa: BLE001
             lines.append(f'× {e}')
         from app.widgets.autosize import fit_label

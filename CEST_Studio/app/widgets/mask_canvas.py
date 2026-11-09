@@ -815,7 +815,9 @@ class MaskCanvasPanel(QGroupBox):
         self.btn_open.setObjectName('primary')
         self.btn_open.clicked.connect(lambda: self.on_open and self.on_open())
         self.btn_load = QPushButton('载入已有掩模…')
-        self.btn_load.setToolTip('从现成的 .mat 读入 Mask / Thmask / liverMask / snrMask，拷进 00_掩模')
+        self.btn_load.setToolTip(
+            '选一个目录（或按住 Ctrl 多选/单选 .mat）→ 自动找出其中所有\n'
+            'Mask / Thmask / liverMask / snrMask 并合并成一套')
         self.btn_load.clicked.connect(lambda: self.on_load and self.on_load())
         self.btn_scan = QPushButton('从输入目录找')
         self.btn_scan.setToolTip('在输入目录里自动找 Mask.mat / liverMask.mat / Thmask.mat')

@@ -93,6 +93,11 @@ class PostModule(Module):
               tip='目录名 {前缀}_interp_{后缀}；默认 0803 以兼容已有 MATLAB 结果'),
         Field('mask_file', '掩模文件', 'file', '',
               tip='留空 = 自动找 00_掩模\\<病例>\\Mask.mat（必填门禁，缺了就拦下）'),
+        Field('organ', '部位名（器官掩模）', 'text', 'liver', advanced=True,
+              group='掩模',
+              tip='器官/组织掩模是哪个部位（liver / brain / kidney…）。\n'
+                  '读 00_掩模\\<病例>\\<部位>ROIMask.mat；找不到再退回 liverMask.mat。\n'
+                  '最终去噪掩模恒为 Mask.mat，与这项无关。'),
         Field('layers', '层', 'text', '', tip='留空 = 全部层；如 1,3,5（写盘层号仍是原层号）'),
         Field('save_full_vas', '写 V_as 全量', 'bool', True,
               tip='关掉只写 V_exp/V_*_mask（省地方）'),
@@ -545,11 +550,19 @@ class PostModule(Module):
             Thmask = np.squeeze(Thmask)
         if Thmask.shape != (Nx, Ny):
             raise RuntimeError(f'掩模形状 {Thmask.shape} 与数据 {(Nx, Ny)} 不一致')
-        # liverMask：同目录里的 liverMask.mat；没有就用 Thmask
+        # 器官掩模：同目录里的 <部位>ROIMask.mat / liverMask.mat；没有就用 Thmask
         _rd = R.find_subdir(ctx.proj, '00_roi') if ctx.proj else None
-        lf = (_rd / case / 'liverMask.mat') if _rd else None
+        lf = None
+        _okey = f'{str(p.get("organ") or "liver").strip() or "liver"}ROIMask'
+        if _rd:
+            _cd = _rd / case
+            for _n in (_okey, 'liverMask'):
+                _c = _cd / f'{_n}.mat'
+                if _c.exists():
+                    lf = _c
+                    break
         if lf is not None and lf.exists():
-            liverMask = np.asarray(load_first(lf, ('liverMask', 'Mask', 'Thmask')), float)
+            liverMask = np.asarray(load_first(lf, (_okey, 'liverMask', 'Mask', 'Thmask')), float)
             if liverMask.ndim == 4:
                 liverMask = np.squeeze(liverMask)
             if liverMask.ndim == 3:

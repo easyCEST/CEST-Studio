@@ -84,14 +84,29 @@ def _h5_value(f, ds):
     return arr.T          # MATLAB 列优先 → h5py 轴序是反的
 
 
-def _load_v73(path) -> dict:
+def _load_v73(path, names=None) -> dict:
+    """读 v7.3。给了 names 就**只读命中的那一个变量**，不碰其余数据集。
+
+    这点很关键：单文件里 S0 只有 10 MB、img_interp 有 2.4 GB 时，
+    整包读会把 2.4 GB 白白搬进内存（v7.3 走 HDF5，本来就是按需读）。
+    """
     import h5py
+    want = None
+    if names is not None:
+        names = [names] if isinstance(names, str) else list(names)
+        want = {str(n).lower() for n in names}
     out = {}
     with h5py.File(str(path), 'r') as f:
         for k in f.keys():
+            if k.startswith('#'):          # MATLAB 内部空数据集
+                continue
+            if want is not None and k.lower() not in want:
+                continue
             obj = f[k]
             if isinstance(obj, h5py.Dataset):
                 out[k] = _h5_value(f, obj)
+            if want is not None and len(out) >= len(want):
+                break                      # 要的都拿到了，不再往下翻
     return out
 
 
@@ -113,7 +128,7 @@ def load_mat(path, names=None) -> dict:
         raise FileNotFoundError(f'找不到文件：{path}')
 
     if is_v73(path):
-        raw = _load_v73(path)
+        raw = _load_v73(path, names)      # ★ 按名读，不整包搬
     else:
         raw = {k: v for k, v in loadmat(str(path)).items() if not k.startswith('__')}
 
@@ -137,6 +152,42 @@ def load_first(path, names):
         if n in got:
             return got[n]
     return None
+
+
+def save_mat(path, data: dict, v73: bool = False, compress: bool = False) -> str:
+    """写 .mat。
+
+    ★ 大数组（单个变量 > 约 2 GB）**必须** v73=True：
+      scipy.savemat 只写 v7，长度字段是 int32，超过 2.147 GB 会溢出/报错。
+      v73 走 h5py（HDF5），没有大小限制，下游 cest_io.load_mat 照样能读。
+
+    Parameters
+    ----------
+    path     : 目标文件（不给后缀会自动补 .mat）
+    data     : {变量名: 数组}；v7.3 下字符串写成 ASCII 字符数组
+    v73      : True → 写 HDF5（v7.3）
+    compress : 仅 v73 有效，gzip 压缩（省磁盘，但慢 2~3 倍）
+    """
+    path = Path(path)
+    if path.suffix.lower() != '.mat':
+        path = path.with_suffix('.mat')
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not v73:
+        savemat(str(path), data, do_compression=True)
+        return str(path)
+
+    import h5py
+    with h5py.File(str(path), 'w') as f:
+        for k, v in data.items():
+            if isinstance(v, str):
+                f.create_dataset(k, data=np.array(list(v), dtype='uint16'))
+            else:
+                arr = np.asarray(v)
+                # 轴序：MATLAB 列优先，h5py 看到的是反的 → 写的时候转置
+                f.create_dataset(k, data=arr.T,
+                                 compression='gzip' if compress else None)
+    return str(path)
 
 
 # ===========================================================================
