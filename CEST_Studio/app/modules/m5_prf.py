@@ -35,6 +35,8 @@ TASK_BET = '组间（不同组之间对比）'
 UNIT_GROUP = '按组（同一组的老鼠合并成一份）'
 UNIT_ONE = '单个（每只一份）'
 NORM_CHOICES = ('不除 S0（原始信号）', '除 S0（÷S0+eps）')
+MERGE_STACK = '直接堆叠（每层各成样本）'
+MERGE_MEAN = '按层平均（同病例各层先平均）'
 
 
 def _mode_key(p) -> str:
@@ -69,6 +71,47 @@ def _parse_region(txt):
     return out or None
 
 
+def _parse_freq(txt):
+    """'-4,4' / '-4~4' / '4,-4' → (-4.0, 4.0)；空或不合法 → None。"""
+    s = str(txt or '').strip().replace('，', ',').replace('~', ',').replace('—', ',')
+    if not s:
+        return None
+    parts = [t for t in s.replace(' ', ',').split(',') if t.strip()]
+    if len(parts) != 2:
+        return None
+    try:
+        a, b = float(parts[0]), float(parts[1])
+    except (TypeError, ValueError):
+        return None
+    return (min(a, b), max(a, b))
+
+
+def _parse_layers(txt):
+    """'16' / '14,15,16' / '1-5' → {16} / {14,15,16} / {1..5}；空 → None（= 全部层）。"""
+    s = str(txt or '').strip().replace('，', ',')
+    if not s:
+        return None
+    out = set()
+    for part in s.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part[1:]:
+            k = part[1:].index('-') + 1
+            a, b = part[:k], part[k + 1:]
+            try:
+                lo, hi = int(float(a)), int(float(b))
+            except (TypeError, ValueError):
+                continue
+            out.update(range(min(lo, hi), max(lo, hi) + 1))
+        else:
+            try:
+                out.add(int(float(part)))
+            except (TypeError, ValueError):
+                continue
+    return out or None
+
+
 class PrfExtractModule(Module):
     id = 'm5_prf'
     badge = '⑤'
@@ -96,6 +139,16 @@ class PrfExtractModule(Module):
               tip='用来把病例名切段识别“几级分组”。默认 _（如 ctrl_3H_小鼠1 → ctrl / 3H / 小鼠1）。'),
         Field('region_roi_idx', '部位划分（左;右）', 'text', '',
               tip='留空 = 按 ROI 奇偶自动分（奇=左、偶=右）。也可写 1,3,5;2,4,6。'),
+        Field('freq_range', '频率区间（ppm）', 'text', '-4,4',
+              tip='只保留这个区间内的频偏点，如 -4,4。\n'
+                  '★ 按 ppm 值对齐：各层频率轴不同、点数不同（201 / 241）也能拼进同一份训练集。\n'
+                  '留空 = 用整条轴（此时要求各层点数一致，否则整层跳过）。'),
+        Field('layers', '层号（留空=全部层）', 'text', '',
+              tip='只取这几层，如 16 或 14,15,16,17；也支持 14-18 这种区间。留空 = 全部层。'),
+        Field('merge_layers', '多层合并方式', 'choice', MERGE_STACK, (MERGE_STACK, MERGE_MEAN),
+              tip=f'{MERGE_STACK}：每层各自成行、上下堆起来，样本数 × 层数（32 层 ≈ 15 万体素）。\n'
+                  f'{MERGE_MEAN}：同一病例的各层先逐体素平均，再成行，样本数 = 单层体素数'
+                  f'（快几十倍，推荐）。'),
         # ---------------- 高级 ----------------
         Field('norm', '信号归一', 'choice', NORM_CHOICES[0], NORM_CHOICES,
               advanced=True, group='数值'),
@@ -221,6 +274,164 @@ class PrfExtractModule(Module):
                 str(b / '<组名 或 病例名>\\trainDataLeft_ROI.mat + trainDataRight_ROI.mat'),
                 str(b / ('groupPaths.mat' if sub == '组内_按组' else 'resultPaths.mat'))]
 
+    # ------------------------------------------------------------ 分组预览
+    def extra_panel(self, page):
+        """按当前参数预览：扫到几个病例 / 分成几组 / 组间怎么配对（只读目录名）。"""
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import (QGroupBox, QHBoxLayout, QLabel,
+                                       QPlainTextEdit, QPushButton, QVBoxLayout)
+        pan = QGroupBox('分组预览（只读目录名，不写盘）')
+        v = QVBoxLayout(pan)
+        v.setSpacing(6)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        btn = QPushButton('刷新分组预览')
+        btn.setObjectName('pick')
+        btn.setToolTip('重新扫目录，看识别到几个病例、几个组、组间怎么配对')
+        btn.clicked.connect(lambda: self._fill_group_preview(pan))
+        row.addWidget(btn)
+        pan.hint = QLabel('参数变化会自动刷新')
+        pan.hint.setObjectName('muted')
+        pan.hint.setWordWrap(True)
+        row.addWidget(pan.hint, 1)
+        row.addStretch(1)
+        v.addLayout(row)
+        view = QPlainTextEdit()
+        view.setReadOnly(True)
+        view.setMinimumHeight(130)
+        view.setMaximumHeight(230)
+        view.setPlainText('点【刷新分组预览】看当前会分成几组。')
+        v.addWidget(view)
+        pan.view, pan.btn = view, btn
+        pan._page, pan._bound = page, False
+        QTimer.singleShot(0, lambda: (self._bind_group_preview(pan),
+                                      self._fill_group_preview(pan)))
+        return pan
+
+    def refresh_extra(self, panel, det, proj, params):
+        if panel is None or not hasattr(panel, 'view'):
+            return
+        self._bind_group_preview(panel)
+        self._fill_group_preview(panel)
+
+    def _bind_group_preview(self, panel):
+        """把「会改变分组」的参数接到防抖刷新上（base_page 默认只挂了几个通用 key）。"""
+        if getattr(panel, '_bound', False):
+            return
+        panel._bound = True
+        page = getattr(panel, '_page', None)
+        if page is None:
+            return
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit
+        timer = QTimer(panel)
+        timer.setSingleShot(True)
+        timer.setInterval(300)
+        timer.timeout.connect(lambda: self._fill_group_preview(panel))
+        panel._timer = timer
+        keys = ('src', 'out_dir', 'mode', 'task', 'unit', 'sep',
+                'region_roi_idx', 'freq_range', 'layers', 'merge_layers',
+                'level1', 'level2', 'max_animal',
+                'pick_rule', 'filename', 'stage_prefix', 'sub_path', 'ratio_list')
+        for k in keys:
+            w = getattr(page, 'widgets', {}).get(k)
+            if w is None:
+                continue
+            if isinstance(w, QComboBox):
+                w.currentTextChanged.connect(lambda *_a, t=timer: t.start())
+            elif isinstance(w, QCheckBox):
+                w.toggled.connect(lambda *_a, t=timer: t.start())
+            elif hasattr(w, '_edit'):
+                w._edit.textChanged.connect(lambda *_a, t=timer: t.start())
+            elif isinstance(w, QLineEdit):
+                w.textChanged.connect(lambda *_a, t=timer: t.start())
+
+    def _fill_group_preview(self, panel):
+        try:
+            page = getattr(panel, '_page', None)
+            proj = page.window.proj() if page is not None else None
+            p = page.params() if page is not None else {}
+            panel.view.setPlainText(self._group_preview_text(p, proj))
+        except Exception as e:                                   # noqa: BLE001
+            panel.view.setPlainText(f'预览失败：{e}')
+
+    def _group_preview_text(self, p, proj) -> str:
+        import cest_group as CGRP
+        mode = _mode_key(p)
+        task = str(p.get('task') or TASK_IN)
+        sep = str(p.get('sep') or '_')
+        src = str(p.get('src') or '').strip() or str(proj or '')
+        lines = [f'数据根：{self._data_root(src, mode)}',
+                 f'目录结构：{mode}     分析模式：{task}']
+        if not src or not Path(src).exists():
+            lines += ['', '（还没选数据根 / 输出总目录，选完自动刷新）']
+            return '\n'.join(lines)
+        try:
+            recs = self._scan(p, src)
+        except Exception as e:                                   # noqa: BLE001
+            lines += ['', f'扫描失败：{e}']
+            return '\n'.join(lines)
+        lines.append(f'扫到 {len(recs)} 条切片记录')
+        if not recs:
+            lines += ['', '一条都没扫到：检查目录结构 / 结果目录前缀 / sub_path。']
+            return '\n'.join(lines)
+        names = []
+        for r in recs:
+            n = str(r.get('g1'))
+            if n not in names:
+                names.append(n)
+        lines.append(f'共 {len(names)} 个病例：' + '、'.join(names))
+        lines.append('')
+
+        if mode == 'hier':
+            groups = {}
+            for r in recs:
+                k = f"{r.get('g1')}_{r.get('g2')}" if r.get('g2') else str(r.get('g1'))
+                groups.setdefault(k, []).append(str(r.get('name')))
+            lines.append(f'按目录层级分成 {len(groups)} 组（hier 只支持组内）')
+            for k, mem in groups.items():
+                lines.append(f'  {k}：{len(mem)} 只 → ' + '、'.join(mem[:8])
+                             + (' …' if len(mem) > 8 else ''))
+            if task == TASK_BET:
+                lines += ['', '组间模式不支持 hier，请改用 cestpost / flat。']
+            else:
+                ug = str(p.get('unit') or '').startswith('按组')
+                lines += ['', f'将产出 {len(groups) if ug else len(names)} 份训练集'
+                          f'（{"按组" if ug else "单个"}）']
+            return '\n'.join(lines)
+
+        sc = CGRP.scan(names, sep=sep)
+        lines.append(CGRP.describe(sc))
+        lines.append('')
+        if task == TASK_BET:
+            pp = CGRP.pair_plan(names, sep=sep)
+            lines.append(f'组间配对：{pp["total"]} 对（{pp["mode"]}）')
+            if pp['pair_level']:
+                lines.append('  配对级（第%d段）：%s' %
+                             (pp['pair_level']['pos'] + 1,
+                              '、'.join(pp['pair_level']['values'])))
+            if not pp['pairs']:
+                lines.append('  没配出对：病例名需要在同一级上有 ≥2 种取值'
+                             '（如 ctrl_3H / model_3H）。')
+            for i, pr in enumerate(pp['pairs'], 1):
+                tag = pr['bucket'] or f'{pr["A"]}_vs_{pr["B"]}'
+                lines.append(f'  [{i}] {tag}：{pr["A"]} vs {pr["B"]}')
+                lines.append(f'       标签1 = {", ".join(pr["membersA"]) or "（空）"}'
+                             f'（{len(pr["membersA"])} 条记录）')
+                lines.append(f'       标签0 = {", ".join(pr["membersB"]) or "（空）"}'
+                             f'（{len(pr["membersB"])} 条记录）')
+            lines += ['', f'将产出 {pp["total"]} 份训练集（每份含 左 / 右 两套）']
+        else:
+            ug = str(p.get('unit') or '').startswith('按组')
+            plan = ([(CGRP.label_of(sc, k), CGRP.members_of(sc, k))
+                     for k in sc['keys']] if ug else [(n, [n]) for n in names])
+            lines.append(f'将产出 {len(plan)} 份训练集'
+                         f'（{"按组" if ug else "单个"}）：')
+            for i, (lab, mem) in enumerate(plan, 1):
+                lines.append(f'  [{i}] {lab}：{len(mem)} 个 → ' + '、'.join(mem[:8])
+                             + (' …' if len(mem) > 8 else ''))
+        return '\n'.join(lines)
+
     # ---------------------------------------------------------------- 运行
     def _fresh(self, p: Path, stamp: str):
         """同名重跑：已有产物先改名成 <名>.bak_<时间戳>（不删，遵循项目铁律）。"""
@@ -235,14 +446,21 @@ class PrfExtractModule(Module):
         except OSError:
             pass
 
-    def _dirs_of(self, recs, names, want):
+    def _dirs_of(self, recs, names, want, layers=None):
+        """按病例名挑记录；layers 给了就只留这几层（sliceN 名里的 N）。"""
         ds, rs = [], []
         ws = set(want)
+        import re as _re
         for r in recs:
             key = str(r.get('g1'))
-            if key in ws:
-                ds.append(r['dir'])
-                rs.append(r.get('roi_dir'))
+            if key not in ws:
+                continue
+            if layers:
+                m = _re.search(r'slice(\d+)', str(r.get('dir') or ''))
+                if m and int(m.group(1)) not in layers:
+                    continue
+            ds.append(r['dir'])
+            rs.append(r.get('roi_dir'))
         return ds, rs
 
     def run(self, p, ctx):
@@ -266,9 +484,16 @@ class PrfExtractModule(Module):
         norm = 0 if str(p.get('norm') or '').startswith('不除') else 1
         eps = _f(p, 'epsilon', 1e-8)
         rroi = _parse_region(p.get('region_roi_idx'))
+        frange = _parse_freq(p.get('freq_range'))
+        lys = _parse_layers(p.get('layers'))
+        merge = 'mean' if str(p.get('merge_layers') or '').startswith('按层平均') else 'stack'
         sep = str(p.get('sep') or '_')
 
         ctx.log(f'⑤ PRF 提取：{task}　{"按组" if unit_group else "单个"}　数据根 {droot}')
+        ctx.log('   频率区间：' + (f'{frange[0]:g} … {frange[1]:g} ppm（按 ppm 对齐各层）'
+                                 if frange else '整条轴（各层点数必须一致）'))
+        ctx.log('   层：' + ('、'.join(str(v) for v in sorted(lys)) if lys else '全部')
+                + f'　多层合并：{"按层平均" if merge == "mean" else "直接堆叠"}')
         recs = self._scan(p, src)
         if not recs:
             raise RuntimeError(
@@ -318,12 +543,16 @@ class PrfExtractModule(Module):
             for i, (label, members) in enumerate(plan, 1):
                 ctx.check_cancel()
                 ctx.progress(int(i * 100 / total), 100, f'[{i}/{total}] {label}')
-                ds, rs = self._dirs_of(recs, names, members)
+                ds, rs = self._dirs_of(recs, names, members, layers=lys)
+                if not ds:
+                    ctx.log(f'   [{i}/{total}] {label}：层号筛选后没有记录，跳过')
+                    continue
                 out = base / label
                 self._fresh(out, stamp)
                 rec, X = PE.build_regions(ds, out, region_roi_idx=rroi, norm=norm,
                                           epsilon=eps, roi_dir=rs,
-                                          add_to_path_list=False, verbose=False)
+                                          add_to_path_list=False, verbose=False,
+                                          freq_range=frange, merge_layers=merge)
                 self._write_lr(out, X, unit_group, savemat)
                 ctx.log(f'   [{i}/{total}] {label}：{rec.get("n_voxel", "?")} 体素　{out}')
                 results.append(str(out))
@@ -342,16 +571,19 @@ class PrfExtractModule(Module):
                 ctx.check_cancel()
                 tag = pr['bucket'] or f'{pr["A"]}_vs_{pr["B"]}'
                 ctx.progress(int(i * 100 / total), 100, f'[{i}/{total}] {tag} {pr["A"]} vs {pr["B"]}')
-                ad, ar = self._dirs_of(recs, names, pr['membersA'])
-                bd, br = self._dirs_of(recs, names, pr['membersB'])
+                ad, ar = self._dirs_of(recs, names, pr['membersA'], layers=lys)
+                bd, br = self._dirs_of(recs, names, pr['membersB'], layers=lys)
+                if not ad or not bd:
+                    ctx.log(f'   [{i}/{total}] {tag}：层号筛选后一侧为空，跳过')
+                    continue
                 out = bdir / tag
                 self._fresh(out, stamp)
                 out.mkdir(parents=True, exist_ok=True)
                 lr = self._roi_sets(recs, names, rroi)
                 self._subjects_side(PE, ad, bd, ar, br, out, 'Left', lr[0], norm, eps,
-                                    pr, CGRP, savemat, load_mat)
+                                    pr, CGRP, savemat, load_mat, frange, merge)
                 self._subjects_side(PE, ad, bd, ar, br, out, 'Right', lr[1], norm, eps,
-                                    pr, CGRP, savemat, load_mat)
+                                    pr, CGRP, savemat, load_mat, frange, merge)
                 ctx.log(f'   [{i}/{total}] {tag}  {pr["A"]} vs {pr["B"]}　{out}')
                 results.append(str(out))
             # newGroupPaths
@@ -362,6 +594,8 @@ class PrfExtractModule(Module):
         savemat(str(sp_file), {sp_key: cells, 'pathInfo': cells})
         meta = dict(task=task, unit='group' if unit_group else 'single', mode=_mode_key(p),
                     sep=sep, norm=norm, epsilon=eps, region_roi_idx=rroi,
+                    freq_range=list(frange) if frange else None,
+                    layers=sorted(lys) if lys else None, merge_layers=merge,
                     data_root=str(droot), n_record=len(recs), outputs=results,
                     sec=round(time.time() - _T0, 1) if '_T0' in globals() else None)
         import json
@@ -404,13 +638,14 @@ class PrfExtractModule(Module):
         return left or [1], right or [1]
 
     def _subjects_side(self, PE, ad, bd, ar, br, out, side, rois, norm, eps,
-                       pr, CGRP, savemat, load_mat):
+                       pr, CGRP, savemat, load_mat, frange=None, merge='stack'):
         tmp = out / ('_tmp' + side)
         if tmp.exists():
             shutil.rmtree(tmp, ignore_errors=True)
         rec, (X1, X2) = PE.build_subjects(ad, bd, tmp, roi_idx=rois, norm=norm, epsilon=eps,
                                           roi_dir1=ar, roi_dir2=br,
-                                          add_to_path_list=False, verbose=False)
+                                          add_to_path_list=False, verbose=False,
+                                          freq_range=frange, merge_layers=merge)
         X1, X2 = np.asarray(X1, float), np.asarray(X2, float)
         data = np.concatenate([X1, X2], axis=0) if X1.size and X2.size else \
             (X1 if X1.size else X2)

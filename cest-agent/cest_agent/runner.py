@@ -31,11 +31,12 @@ from detect.scanner import detect
 from jobs.ctx import Cancelled, JobContext
 
 from . import doctor, freq as freqmod, verify
+from . import layout
 from . import plan
 from .plan import STAGE_LABEL, roi_stage
 
 # 吃 ①⑧ 数据链的阶段（需要前置门禁）；⑤⑥⑦ 跨病例/自检，不吃
-_CHAIN_STAGES = ('m1_recon', 'm_roi', 'm3_post', 'm4_ld', 'm2_display')
+_CHAIN_STAGES = plan.CHAIN_STAGES
 
 
 def _module(mid):
@@ -117,14 +118,23 @@ def params_for(mid, proj, case, overrides=None, io=None) -> dict:
     # ---- 输入 ----
     if 'src' in keys:
         src = t.get('inp') or ''
-        if not src:
+        if not src and mid != 'm_import':      # ⓪ 的输入就是用户给的原始目录，不能拿 01_重建 顶
             rd = chain.recon_dir(proj, case)
             src = str(rd) if rd else (p.get('src') or '')
+        elif not src:
+            src = p.get('src') or ''
         p['src'] = src
     # ---- 输出（模块自己接受 out_root / out_dir 的，显式给到病例级目录）----
     for k in ('out_root', 'out_dir'):
         if k in keys and t.get('out'):
             p[k] = t['out']
+    # ---- 部位名（1.0.6：器官掩模按 <部位>ROIMask.mat 读写）----
+    if 'organ' in keys:
+        org = (t.get('organ') or '').strip()
+        if not org:
+            org = layout.organ_of(proj, case)
+        if org:
+            p['organ'] = org
     # ---- 掩模（③④② 都要）----
     if mid in ('m3_post', 'm4_ld', 'm2_display') and 'mask_file' in keys:
         mf = t.get('mask') or ''
@@ -201,8 +211,12 @@ def run_chain(proj, cases, stages=('m1_recon', 'm_roi', 'm3_post', 'm4_ld'),
 
         # ---- 前置门禁：只对吃数据链的阶段生效 ----
         # ⑤⑥⑦ 是跨病例/自检模块，不吃 ①⑧ 的数据链，不该被掩模拦住。
+        # 本次要跑 ⓪/① 时也不预先查 ⑧：01_重建 还没出来，⑧ 必然报「缺数据」，
+        # 那不是真问题 —— 等 ① 跑完，循环里的 ⑧ 会再判一次。
+        _makes_recon = any(s in stages for s in ('m_import', 'm1_recon'))
         gate_stages = [s for s in stages if s in _CHAIN_STAGES]
-        if gate_stages:
+        if gate_stages and not _makes_recon and not chain.has_recon(
+                chain.recon_dir(proj, case)):
             needs_roi = ('m3_post' in stages)
             gate = plan.check_case(proj, case, ('m_roi',))
             blocking = [p for p in (gate.get('needs_human') or [])
@@ -248,8 +262,9 @@ def run_chain(proj, cases, stages=('m1_recon', 'm_roi', 'm3_post', 'm4_ld'),
                     break
                 continue
 
-            # ---- 频率表（只在 ① 之前查） ----
-            if sid == 'm1_recon':
+            # ---- 频率表（只在真正要重建时查；⓪ 已建好的不用查） ----
+            if sid == 'm1_recon' and not (
+                    chain.has_recon(chain.recon_dir(proj, case)) and not force):
                 info = ensure_freq(proj, case, ev)
                 if info['status'] == 'found' and confirm_freq:
                     ok = confirm_freq(case, info)

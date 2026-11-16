@@ -15,7 +15,8 @@ import re
 
 # 阶段别名 → 模块 id
 STAGE_ALIAS = [
-    ('m1_recon', r'重建|recon|导入|dicom|①'),
+    ('m_import', r'导入重建|导入数据|导入|⓪'),
+    ('m1_recon', r'重建|recon|dicom|①'),
     ('m_roi', r'掩模|掩膜|mask|roi|去噪|⑧'),
     ('m3_post', r'后处理|post|插值|b0|③'),
     ('m4_ld', r'ld|逐体素|洛伦兹|拟合|④'),
@@ -81,17 +82,19 @@ LLM_SYSTEM = """你是 CEST Studio 的指令解析器。把用户的一句话转
      check    = 只做预检，不跑
      diagnose = 询问上次为什么失败 / 要排查
   stages: 字符串数组，取值只能是下面之一（按执行顺序）
-     "m1_recon"（DICOM 重建）
-     "m_roi"（去噪掩模 / 器官 ROI）
-     "m3_post"（CEST 后处理）
-     "m4_ld"（逐体素 LD）
-     "m2_display"（多层图谱展示）
+     "m_import"（⓪ 导入重建：把已有 s0 / Z 谱 .mat 组装成 01_重建）
+     "m1_recon"（① DICOM 重建）
+     "m_roi"（⑧ 去噪掩模 / 器官 ROI）
+     "m3_post"（③ CEST 后处理）
+     "m4_ld"（④ 逐体素 LD）
+     "m2_display"（② 多层图谱展示）
   cases: 字符串数组，病例名；空数组表示全部病例
   force: 布尔，是否强制重跑已完成的阶段
 
 注意：
   - 用户只说「跑到 LD」= ["m1_recon","m_roi","m3_post","m4_ld"]
   - 用户说「只跑后处理」= ["m3_post"]
+  - 用户说「导入/已有数据/组装」= ["m_import"]
   - 不确定就返回 action="check"、stages 给全。
 只输出 JSON。"""
 

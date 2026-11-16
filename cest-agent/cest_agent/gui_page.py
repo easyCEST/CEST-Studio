@@ -30,10 +30,10 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog,
 from . import chat, config, intent, layout, plan, report, runner
 from .report import STAGE_NAME
 
-STAGE_ORDER = ('m1_recon', 'm_roi', 'm3_post', 'm4_ld', 'm2_display')
+STAGE_ORDER = ('m_import', 'm1_recon', 'm_roi', 'm3_post', 'm4_ld', 'm2_display')
 STAGE_TITLE = {
-    'm1_recon': '① 重建', 'm_roi': '⑧ 掩模/ROI', 'm3_post': '③ 后处理',
-    'm4_ld': '④ 逐体素LD', 'm2_display': '② 展示',
+    'm_import': '⓪ 导入重建', 'm1_recon': '① 重建', 'm_roi': '⑧ 去噪掩模',
+    'm3_post': '③ 后处理', 'm4_ld': '④ 逐体素LD', 'm2_display': '② 展示',
 }
 ST_COLOR = {
     'done': ('#1e8449', 'filled'), 'todo': ('#b9770e', 'ring'),
@@ -442,6 +442,7 @@ class AgentPanel(QWidget):
             '左边选「只跑一个模块」，就只动那一页，不跑上游。\n\n'
             '两点先说清楚：\n'
             '　· **掩模和器官 ROI 必须你手画**——缺了我停下，把你送到 ⑧ 页，不代生成。\n'
+            '　· 手上只有扫描原始数据（S0 + Z 谱）就先跑 ⓪ 导入重建，由它组装成 ① 的输入。\n'
             '　· **频率表**我先自动检索，检索到了也要你核对过才写进去。\n\n'
             '输入目录选原始 DICOM（或某个病例/结果目录），我自动认出病例和输出位置。')
 
@@ -742,6 +743,11 @@ class AgentPanel(QWidget):
 
         if self.rb_single.isChecked():
             mid = self._now_mid()
+            if mid == 'm_import' and not self.ed_in.text().strip():
+                QMessageBox.information(
+                    self, '没选输入目录',
+                    '⓪ 导入重建要读原始扫描目录（含 S0 与 Z 谱），请先选输入目录。')
+                return
             if not case:
                 case = self._io.get('case') or ''
             if not case:
@@ -953,8 +959,8 @@ class AgentPanel(QWidget):
 
 
 # 单模块模式下，意图里的阶段 → 模块 id
-_ALIAS_MOD = {'m1_recon': 'm1_recon', 'm3_post': 'm3_post', 'm4_ld': 'm4_ld',
-              'm2_display': 'm2_display'}
+_ALIAS_MOD = {'m_import': 'm_import', 'm1_recon': 'm1_recon', 'm3_post': 'm3_post',
+              'm4_ld': 'm4_ld', 'm2_display': 'm2_display'}
 
 
 class _TestThread(QThread):

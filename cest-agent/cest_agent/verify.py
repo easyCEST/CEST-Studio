@@ -120,8 +120,19 @@ def recon(proj, case, res=None) -> dict:
     return dict(ok=True, reason='', out_dir=str(rd))
 
 
+def mask(proj, case, res=None) -> dict:
+    """⑧ 去噪掩模：00_掩模\\<病例>\\Mask.mat 在不在（1.0.6 的硬门禁）。"""
+    from detect import chain
+    mf = chain.mask_file(proj, case)
+    if mf is None:
+        return dict(ok=False, reason=f'缺 00_掩模\\{case}\\Mask.mat')
+    return dict(ok=True, reason='', mask_file=str(mf))
+
+
 VERIFIERS = {
+    'm_import': recon,
     'm1_recon': recon,
+    'm_roi': mask,
     'm3_post': post,
     'm4_ld': ld,
     'm2_display': display,

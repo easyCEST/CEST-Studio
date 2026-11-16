@@ -92,6 +92,15 @@ def _layer_of_dir(p):
     return None
 
 
+def _case_key(p):
+    """从 .../sliceN/Self_corr 这类路径里抠出「病例/结果目录」这一级（用于按层平均）。"""
+    parts = [x for x in str(p).replace('\\', '/').split('/') if x]
+    for i in range(len(parts) - 1, -1, -1):
+        if re.fullmatch(r'slice[ _-]?\d+', parts[i].strip(), re.I):
+            return '/'.join(parts[:i])
+    return str(p)
+
+
 def _roi_at_layer(roi_file, nxy, layer, var_roi=VAR_ROI):
     """取 ROI 列表（0-based 线性索引，口径同 _normalize_roi）。
 
@@ -126,20 +135,72 @@ def _roi_at_layer(roi_file, nxy, layer, var_roi=VAR_ROI):
     return out
 
 
+def _freq_grid(w, freq_range=None, freq_step=None):
+    """按频率区间 + 步长造目标网格（ppm 值，不是下标）。freq_range 为空 → None。"""
+    if not freq_range:
+        return None
+    lo, hi = float(freq_range[0]), float(freq_range[1])
+    if hi < lo:
+        lo, hi = hi, lo
+    if freq_step:
+        step = float(freq_step)
+    elif w is not None and len(w) > 1:
+        d = np.diff(np.sort(np.asarray(w, float)))
+        d = d[np.isfinite(d) & (d > 0)]
+        step = float(np.min(d)) if d.size else 0.1
+    else:
+        step = 0.1
+    n = int(round((hi - lo) / step)) + 1
+    return lo + step * np.arange(n)
+
+
+def _align_freq(V2D, w_src, grid):
+    """把 (N, F) 从 w_src 这条轴重采样到 grid 上（网格点落在原始轴上就直取，否则线性插值）。"""
+    if grid is None:
+        return V2D
+    if w_src is None or len(w_src) != V2D.shape[1]:
+        if V2D.shape[1] == grid.size:
+            return V2D
+        raise ValueError(f'频偏表缺失或长度({len(w_src) if w_src is not None else 0})'
+                         f'与数据({V2D.shape[1]})不符，无法对齐到 {grid.size} 点网格')
+    x = np.asarray(w_src, float).ravel()
+    order = np.argsort(x)
+    x = x[order]
+    V = V2D[:, order]
+    j = np.searchsorted(x, grid)
+    exact = (j < x.size) & np.isclose(x[np.clip(j, 0, x.size - 1)], grid, atol=1e-4)
+    if exact.all():
+        return V[:, j]                                  # 点全在原始轴上 → 直取，最快
+    j0 = np.clip(j - 1, 0, x.size - 1)
+    j1 = np.clip(j, 0, x.size - 1)
+    x0, x1 = x[j0], x[j1]
+    den = np.where(x1 == x0, 1.0, x1 - x0)
+    t = ((grid - x0) / den)[None, :]
+    return V[:, j0] * (1.0 - t) + V[:, j1] * t
+
+
 def load_features(src_dirs, norm=0, roi_idx=None, roi_dir=None, epsilon=1e-8,
                   verbose=True, var_data=VAR_DATA, var_s0=VAR_S0,
-                  var_roi=VAR_ROI, var_w=VAR_W, layer=None):
+                  var_roi=VAR_ROI, var_w=VAR_W, layer=None,
+                  freq_range=None, freq_step=None, merge_layers='stack'):
     """
     从 slice 目录提取「体素 × 频偏」特征矩阵。
 
     Parameters
     ----------
-    src_dirs : 目录 或 目录列表（多个会纵向拼成一个大矩阵）
-    norm     : 0 = 直接取原始信号（默认）；1 = 除以 S0 + epsilon
-    roi_idx  : 用哪几个 ROI（**1 开始**）。None = 全部；1 = 只取 ROI 1
-    roi_dir  : ROI 与数据不同目录时指定（可为列表，与 src_dirs 对应）
-    layer    : 1-based 层号。None（默认）= 按每个 src_dir 的 sliceN 名自动认层；
-               ⑧ 逐层画过 ROI 时各层取自己那张（缺层回退 2D 共用）
+    src_dirs   : 目录 或 目录列表（多个会纵向拼成一个大矩阵）
+    norm       : 0 = 直接取原始信号（默认）；1 = 除以 S0 + epsilon
+    roi_idx    : 用哪几个 ROI（**1 开始**）。None = 全部；1 = 只取 ROI 1
+    roi_dir    : ROI 与数据不同目录时指定（可为列表，与 src_dirs 对应）
+    layer      : 1-based 层号。None（默认）= 按每个 src_dir 的 sliceN 名自动认层；
+                 ⑧ 逐层画过 ROI 时各层取自己那张（缺层回退 2D 共用）
+    freq_range : (lo, hi) ppm。给了就按这个区间出网格，**每个来源用自己的
+                 w_offset 对齐到同一网格**——这样各层频率轴不同、点数不同
+                 （如 201 / 241）也能拼进同一个训练集。
+    freq_step  : 网格步长；None = 取第一个来源的最小正步长（通常 0.1）。
+    merge_layers : 'stack'（默认）= 每层各自成行、直接上下拼；
+                   'mean' = 同一个病例（同目录下不同 sliceN）先**逐体素平均**
+                           再成行，样本数不再 × 层数。
 
     Returns
     -------
@@ -157,6 +218,8 @@ def load_features(src_dirs, norm=0, roi_idx=None, roi_dir=None, epsilon=1e-8,
     blocks, s0_blocks, per_src = [], [], []
     idx_left, idx_right = [], []
     n_vox, n_freq, w_off = 0, None, None
+    grid = None                      # freq_range 给了之后的统一网格
+    acc, order = {}, {}              # merge_layers='mean' 的累加器
     eps = float(epsilon)
 
     for i, d in enumerate(src_dirs):
@@ -186,11 +249,35 @@ def load_features(src_dirs, norm=0, roi_idx=None, roi_dir=None, epsilon=1e-8,
         nxy = nx * ny
         V2D = V.reshape(nxy, F, order='F')     # ★ 列优先，和 MATLAB 一致
 
-        if n_freq is None:
-            n_freq = F
-        elif F != n_freq:
-            print(f'  [跳过] {d}：频偏点数 {F} 与首个来源的 {n_freq} 不一致')
-            continue
+        # ---- 频偏（每个来源各自读，才能各自对齐到统一网格）----
+        w_src = load_first(ff['w'], var_w)
+        w_src = None if w_src is None else np.asarray(w_src).ravel()
+        if w_off is None and w_src is not None:
+            w_off = w_src
+
+        if freq_range:
+            # 按 ppm 区间出统一网格；各来源轴不同/点数不同都能拼
+            if grid is None:
+                grid = _freq_grid(w_src if w_src is not None else None,
+                                  freq_range, freq_step)
+                n_freq = grid.size
+                if verbose:
+                    print(f'  [频率区间] {grid[0]:g} … {grid[-1]:g} ppm，'
+                          f'{grid.size} 点，步长 {grid[1] - grid[0]:g}'
+                          if grid.size > 1 else '')
+            try:
+                V2D = _align_freq(V2D, w_src, grid)
+            except ValueError as e:
+                print(f'  [跳过] {d}：{e}')
+                continue
+            w_off = grid
+        else:
+            if n_freq is None:
+                n_freq = F
+            elif F != n_freq:
+                print(f'  [跳过] {d}：频偏点数 {F} 与首个来源的 {n_freq} 不一致'
+                      f'（可在 ⑤ 设「频率区间」按 ppm 对齐）')
+                continue
 
         # ---- 参考图 S0 ----
         S0 = load_first(ff['s0'], var_s0)
@@ -233,27 +320,58 @@ def load_features(src_dirs, norm=0, roi_idx=None, roi_dir=None, epsilon=1e-8,
             blk = V2D[idx, :]
             if norm == 1:
                 blk = blk / (S0f[idx] + eps)[:, None]
-            blocks.append(blk)
-            s0_blocks.append(S0f[idx])
+            if merge_layers == 'mean':
+                # 同一个「病例/结果目录」的多个层 → 累加后求平均，不再叠成 32 份样本
+                key = _case_key(d)
+                acc.setdefault(key, {})
+                order.setdefault(key, list(sel))
+                slot = acc[key].setdefault(k, [np.zeros_like(blk), 0])
+                slot[0] = slot[0] + blk
+                slot[1] += 1
+            else:
+                blocks.append(blk)
+                s0_blocks.append(S0f[idx])
             cnt.append(idx.size)
 
-        start = n_vox
-        ends = np.cumsum(cnt)
-        starts = ends - np.array(cnt) + 1
-        for j, k in enumerate(sel):
-            if cnt[j] == 0:
-                continue
-            rows = np.arange(start + starts[j] - 1, start + ends[j])   # 0-based
-            (idx_left if k % 2 == 1 else idx_right).append(rows)       # 奇=左，偶=右
+        if merge_layers != 'mean':
+            start = n_vox
+            ends = np.cumsum(cnt)
+            starts = ends - np.array(cnt) + 1
+            for j, k in enumerate(sel):
+                if cnt[j] == 0:
+                    continue
+                rows = np.arange(start + starts[j] - 1, start + ends[j])   # 0-based
+                (idx_left if k % 2 == 1 else idx_right).append(rows)       # 奇=左，偶=右
+            n_vox += int(sum(cnt))
+        per_src.append({'dir': str(d), 'n_voxel': int(sum(cnt)), 'roi_sel': sel,
+                        'case': _case_key(d) if merge_layers == 'mean' else None})
 
-        n_vox += int(sum(cnt))
-        per_src.append({'dir': str(d), 'n_voxel': int(sum(cnt)), 'roi_sel': sel})
-
-        # ---- 频偏（取第一个非空的）----
-        if w_off is None:
-            w = load_first(ff['w'], var_w)
-            if w is not None:
-                w_off = np.asarray(w).ravel()
+    # ---- 平均模式：每个病例每组 ROI 一行集合（层已平均掉）----
+    if merge_layers == 'mean':
+        for key, per_roi in acc.items():
+            for k in order.get(key, []):
+                if k not in per_roi:
+                    continue
+                tot, n = per_roi[k]
+                if n == 0:
+                    continue
+                blocks.append(tot / float(n))
+                cnt.append(tot.shape[0])
+        # 重新按贡献顺序算左右行号
+        idx_left, idx_right = [], []
+        pos = 0
+        for key, per_roi in acc.items():
+            for k in order.get(key, []):
+                if k not in per_roi:
+                    continue
+                tot, n = per_roi[k]
+                if n == 0:
+                    continue
+                rows = np.arange(pos, pos + tot.shape[0])
+                (idx_left if k % 2 == 1 else idx_right).append(rows)
+                pos += tot.shape[0]
+        n_vox = pos
+        s0_blocks = []
 
     if not blocks:
         raise ValueError('没有任何可用的数据来源')
@@ -284,7 +402,8 @@ def load_features(src_dirs, norm=0, roi_idx=None, roi_dir=None, epsilon=1e-8,
 # ===========================================================================
 def build_regions(src_dirs, out_dir, region_roi_idx=None, region_names=None,
                   label_style='binary', norm=0, epsilon=1e-8, roi_dir=None,
-                  add_to_path_list=True, path_list_file=None, verbose=True):
+                  add_to_path_list=True, path_list_file=None, verbose=True,
+                  freq_range=None, freq_step=None, merge_layers='stack'):
     """
     把 ``ROI_total`` 里的多个 ROI 当成「部位」，输出 trainData / trainLabel / w_offset。
 
@@ -338,7 +457,9 @@ def build_regions(src_dirs, out_dir, region_roi_idx=None, region_names=None,
     for g in range(G):
         X, _, m = load_features(src_dirs, norm=norm, epsilon=epsilon,
                                 roi_idx=region_roi_idx[g], roi_dir=roi_dir,
-                                verbose=verbose)
+                                verbose=verbose,
+                                freq_range=freq_range, freq_step=freq_step,
+                                merge_layers=merge_layers)
         X_list.append(X)
         n_vox_g.append(X.shape[0])
         if g == 0:
@@ -364,7 +485,8 @@ def build_regions(src_dirs, out_dir, region_roi_idx=None, region_names=None,
 def build_subjects(src1, src2, out_dir, roi_idx=1, norm=0, epsilon=1e-8,
                    roi_dir1=None, roi_dir2=None, name1='标签1', name2='标签0',
                    add_to_path_list=True, path_list_file=None, verbose=True,
-                   bar_plot=False, bar_tag=None, bar_range='clinical'):
+                   bar_plot=False, bar_tag=None, bar_range='clinical',
+                   freq_range=None, freq_step=None, merge_layers='stack'):
     """
     标签 1 / 标签 0 两个来源各取「同一个部位」，合并成一个训练集。
 
@@ -382,9 +504,13 @@ def build_subjects(src1, src2, out_dir, roi_idx=1, norm=0, epsilon=1e-8,
     print(f'部位(ROI)：{roi_idx}')
 
     X1, _, m1 = load_features(_as_list(src1), norm=norm, epsilon=epsilon,
-                              roi_idx=roi_idx, roi_dir=roi_dir1, verbose=verbose)
+                              roi_idx=roi_idx, roi_dir=roi_dir1, verbose=verbose,
+                              freq_range=freq_range, freq_step=freq_step,
+                              merge_layers=merge_layers)
     X2, _, m2 = load_features(_as_list(src2), norm=norm, epsilon=epsilon,
-                              roi_idx=roi_idx, roi_dir=roi_dir2, verbose=verbose)
+                              roi_idx=roi_idx, roi_dir=roi_dir2, verbose=verbose,
+                              freq_range=freq_range, freq_step=freq_step,
+                              merge_layers=merge_layers)
 
     X = np.vstack([X1, X2])
     y = np.concatenate([np.ones(X1.shape[0]), np.zeros(X2.shape[0])])
@@ -448,8 +574,8 @@ def gen_paths(root_dir, mode='flat', sub_path='full_interp_0716/slice1',
                                  'dir': d, 'roi_dir': d})
 
     elif mode == 'hier':
-        for g1 in level1:
-            for g2 in level2:
+        for g1 in (level1 or ('ctrl', 'model')):
+            for g2 in (level2 or ('3H', '1W', '5W')):
                 p2 = root / g1 / g2
                 if not p2.is_dir():
                     continue

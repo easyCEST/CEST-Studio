@@ -9,9 +9,9 @@ from pathlib import Path
 from . import paths
 
 STAGE_NAME = {
-    'm1_recon': '① 重建', 'm_roi': '⑧ 掩模/ROI', 'm3_post': '③ 后处理',
-    'm4_ld': '④ 逐体素LD', 'm2_display': '② 展示',
-    'm5_prf': '⑤ PRF提取', 'm6_prf_analysis': '⑥ PRF分析',
+    'm_import': '⓪ 导入重建', 'm1_recon': '① 重建', 'm_roi': '⑧ 去噪掩模',
+    'm3_post': '③ 后处理', 'm4_ld': '④ 逐体素LD', 'm2_display': '② 展示',
+    'm5_prf': '⑤ PRF提取', 'm6_prf_analysis': '⑥ PRF分析', 'm0_check': '⑦ 自检',
 }
 STATUS_CN = {'ok': '全部成功', 'partial': '产物不全', 'fail': '失败',
              'blocked': '卡在前置', 'cancelled': '已取消', 'done': '已完成'}

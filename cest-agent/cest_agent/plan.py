@@ -16,16 +16,22 @@ from detect import chain
 from detect import rules as R
 
 # 链条顺序（② 展示放最后；⑧ 只检查、不执行）
-STAGES = ('m1_recon', 'm_roi', 'm3_post', 'm4_ld', 'm2_display')
+# ⓪ 是 1.0.6 新增的入口：从已有 s0 / Z 谱组装 01_重建（与 ① 并列，二选一）。
+STAGES = ('m_import', 'm1_recon', 'm_roi', 'm3_post', 'm4_ld', 'm2_display')
 STAGE_LABEL = {
+    'm_import': '⓪ 导入重建',
     'm1_recon': '① 重建',
-    'm_roi': '⑧ 掩模/ROI',
+    'm_roi': '⑧ 去噪掩模',
     'm3_post': '③ 后处理',
     'm4_ld': '④ 逐体素LD',
     'm2_display': '② 展示',
     'm5_prf': '⑤ PRF提取',
     'm6_prf_analysis': '⑥ PRF分析',
+    'm0_check': '⑦ 自检',
 }
+
+# 吃 ①⑧ 数据链的阶段（① 之前要先有 01_重建，⑧ 之后才有 ③④②）
+CHAIN_STAGES = ('m1_recon', 'm_roi', 'm3_post', 'm4_ld', 'm2_display')
 
 
 def cases_of(proj) -> list:
@@ -59,7 +65,9 @@ def _done(proj, case, mid) -> bool:
 
 
 def _blocked_by(stage_map, ids):
-    return [s for s in ids if stage_map.get(s, {}).get('status') != 'done']
+    """ids 里还没 done 的（只算本次确实要跑的阶段，没勾的不算阻塞源）。"""
+    return [s for s in ids
+            if s in stage_map and stage_map[s].get('status') != 'done']
 
 
 def _blk_problem(ids, case):
@@ -71,7 +79,7 @@ def _blk_problem(ids, case):
 def roi_stage(proj, case) -> dict:
     """⑧ 的状态。注意：⑧ 是**人工阶段**，agent 只检查，永远不代跑。
 
-    状态以「去噪掩模 Mask.mat」为准（与 GUI 的数据链自检一致）；
+    状态以「去噪掩膜 Mask.mat」为准（与 GUI 的数据链自检一致）；
     缺 ROI_total 单独作为 ③ 的前置问题列出，不影响 ④（④ 只要掩模）。
     """
     if not proj:
@@ -102,9 +110,47 @@ def roi_stage(proj, case) -> dict:
                 has_mask=has_mask, has_roi=has_roi, problems=probs)
 
 
-def check_case(proj, case, stages=None, force=False) -> dict:
-    stages = list(stages or STAGES)
+def import_stage(proj, case, io=None) -> dict:
+    """⓪ 的状态（1.0.6 新增）。
+
+    ⓪ 和 ① 产出**同一份** 01_重建\\<病例>\\，所以：
+        · 01_重建 已经齐了 → done（不管当初是 ⓪ 还是 ① 建的）
+        · 没齐，但给了能当 ⓪ 输入的数据目录 → todo（agent 可以跑）
+        · 没齐，也没给数据目录 → question（要用户指一下数据在哪）
+    """
+    if not proj:
+        return dict(id='m_import', label=STAGE_LABEL['m_import'], status='blocked',
+                    problems=[dict(kind='no_proj', fix_kind='human_gui',
+                                   text='还没选输出总目录（PROJ）',
+                                   goto=dict(mid='m_import', case=case or ''))])
+    if chain.has_recon(chain.recon_dir(proj, case)):
+        return dict(id='m_import', label=STAGE_LABEL['m_import'],
+                    status='done', problems=[])
+    src = ''
+    try:
+        src = str(((io or {}).get('stages') or {}).get('m_import', {})
+                  .get('inp') or '').strip()
+    except Exception:                                    # noqa: BLE001
+        src = ''
+    if src:
+        return dict(id='m_import', label=STAGE_LABEL['m_import'],
+                    status='todo', problems=[], src=src)
+    return dict(id='m_import', label=STAGE_LABEL['m_import'], status='blocked',
+                problems=[dict(
+                    kind='import_missing', fix_kind='manual_arg',
+                    text=f'缺 01_重建\\{case}（s0 / ssat / w_offset）—— '
+                         f'要么在 ⓪ 用已有 s0/Z 谱导入（需指定数据目录），'
+                         f'要么在 ① 从原始 DICOM 重建',
+                    goto=dict(mid='m_import', case=case))])
+
+
+def check_case(proj, case, stages=None, force=False, io=None) -> dict:
+    stages = list(stages or CHAIN_STAGES)
     smap = {}
+
+    # ⓪ 导入重建（1.0.6）：与 ① 同产出 01_重建，二选一
+    if 'm_import' in stages:
+        smap['m_import'] = import_stage(proj, case, io=io)
 
     # ① 重建
     if 'm1_recon' in stages:
@@ -124,10 +170,21 @@ def check_case(proj, case, stages=None, force=False) -> dict:
         roi = roi_stage(proj, case)
         smap['m_roi'] = roi
 
+    # 下游（③④②）到底有没有 01_重建 可用：
+    #   盘上已经有 → 有；本次勾了 ⓪ 且它没被卡住 → 跑完就会有。
+    #   否则挂上 m1_recon 作为阻塞源（提示"等 ① 重建"）。
+    _has_recon = chain.has_recon(chain.recon_dir(proj, case))
+    _imp = smap.get('m_import') or {}
+    _recon_ok = _has_recon or (
+        'm_import' in stages and _imp.get('status') in ('done', 'todo'))
+
+    def _recon_needs():
+        return [] if _recon_ok else ['m1_recon']
+
     # ③ 后处理：需要 ① + 掩模 + ROI_total
     if 'm3_post' in stages:
         ok = _done(proj, case, '03_post') and not force
-        blk = _blocked_by(smap, ['m1_recon', 'm_roi'])
+        blk = _blocked_by(smap, _recon_needs() + ['m_roi'])
         probs = []
         if roi is not None and roi.get('has_roi') is False:
             blk = sorted(set(blk + ['m_roi']))
@@ -149,7 +206,7 @@ def check_case(proj, case, stages=None, force=False) -> dict:
     # ④ 逐体素LD：需要 ① + 掩模（不吃 ③、不吃 ROI_total）
     if 'm4_ld' in stages:
         ok = _done(proj, case, '04_ld') and not force
-        needs = ['m1_recon']
+        needs = _recon_needs()
         if roi is not None and roi.get('has_mask') is False:
             needs.append('m_roi')
         blk = _blocked_by(smap, needs)
@@ -168,7 +225,7 @@ def check_case(proj, case, stages=None, force=False) -> dict:
     # ② 展示：需要 ① + 掩模
     if 'm2_display' in stages:
         ok = _done(proj, case, '02_display') and not force
-        needs = ['m1_recon']
+        needs = _recon_needs()
         if roi is not None and roi.get('has_mask') is False:
             needs.append('m_roi')
         blk = _blocked_by(smap, needs)
@@ -226,8 +283,8 @@ def _next_action(res) -> dict:
     return dict(kind='done', text='这条链已经全跑完了。')
 
 
-def check(proj, case='', stages=None, force=False) -> dict:
-    stages = list(stages or STAGES)
+def check(proj, case='', stages=None, force=False, io=None) -> dict:
+    stages = list(stages or CHAIN_STAGES)
     if not proj:
         return dict(proj='', cases=[], error='还没选输出总目录（PROJ）',
                     next_action=dict(kind='human',
@@ -235,18 +292,28 @@ def check(proj, case='', stages=None, force=False) -> dict:
                                      goto=dict(mid='m1_recon', case='')))
     cases = cases_of(proj)
     if case and case not in cases:
-        return dict(proj=proj, cases=[], error=f'PROJ 里没有这个病例：{case}',
-                    known=cases)
+        # ⓪ 还没导入时，PROJ 里本来就没有病例 —— 以输入目录识别出的为准
+        io_cases = list((io or {}).get('cases') or [])
+        if 'm_import' in stages and case in io_cases:
+            cases = io_cases
+        else:
+            return dict(proj=proj, cases=[], error=f'PROJ 里没有这个病例：{case}',
+                        known=cases)
     targets = [case] if case else cases
+    if not targets and 'm_import' in stages:
+        targets = list((io or {}).get('cases') or [])
+        if case:
+            targets = [case]
     if not targets:
         return dict(proj=proj, cases=[],
                     error='PROJ 里还没有病例（01_重建 下没有病例子目录）',
-                    next_action=dict(kind='human', text='先跑 ① 重建',
-                                     goto=dict(mid='m1_recon', case='')))
+                    next_action=dict(kind='human',
+                                     text='先跑 ⓪ 导入重建或 ① 重建',
+                                     goto=dict(mid='m_import', case='')))
     res = dict(proj=proj, cases=[], stages=stages,
                summary=dict(done=0, todo=0, blocked=0, needs_human=0))
     for c in targets:
-        r = check_case(proj, c, stages, force=force)
+        r = check_case(proj, c, stages, force=force, io=io)
         res['cases'].append(r)
         for s in r['stages']:
             if s['status'] == 'done':

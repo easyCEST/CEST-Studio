@@ -53,6 +53,37 @@ def _dicom_cases(d: Path) -> list:
     return out
 
 
+def organ_of(proj, case) -> str:
+    """反推这个病例的「部位名」。
+
+    ★ 1.0.6 起：最终去噪掩模恒为 Mask.mat，器官掩模另存 `<部位>ROIMask.mat`。
+      所以部位名可以直接从已经落盘的文件名读出来，不用用户再填一遍。
+    顺序：<部位>ROIMask.mat（非 liver 优先）→ liverROIMask.mat → liverMask.mat（旧名）
+    """
+    d = chain.roi_dir(proj, case)
+    if d is None:
+        return ''
+    d = Path(d)
+    try:
+        if not d.is_dir():
+            return ''
+        names = []
+        for f in d.glob('*ROIMask.mat'):
+            k = f.stem[:-len('ROIMask')]
+            if k:
+                names.append(k)
+        others = [x for x in names if x.lower() != 'liver']
+        if others:
+            return sorted(others)[0]
+        if names:
+            return 'liver'
+        if (d / 'liverMask.mat').exists():
+            return 'liver'
+    except OSError:
+        pass
+    return ''
+
+
 def sniff(path) -> dict:
     """判断这个路径是什么，病例叫什么。
 
@@ -217,8 +248,12 @@ def resolve_io(src_path, proj_hint='', case='') -> dict:
     return out
 
 
-def targets(proj, case, dicom_src='') -> dict:
-    """各阶段的输入/输出绝对路径（PROJ 的固定布局，直接用 GUI 的 cn_name）。"""
+def targets(proj, case, dicom_src='', data_src='') -> dict:
+    """各阶段的输入/输出绝对路径（PROJ 的固定布局，直接用 GUI 的 cn_name）。
+
+    dicom_src = ① 的输入（原始 DICOM 目录）
+    data_src  = ⓪ 的输入（已有 s0 / Z 谱的目录或 .mat）
+    """
     proj = str(proj or '').strip()
     case = str(case or '').strip()
     if not proj or not case:
@@ -229,20 +264,22 @@ def targets(proj, case, dicom_src='') -> dict:
     post = p / R.cn_name('03_post') / case
     ld = p / R.cn_name('04_ld') / case
     disp = p / R.cn_name('02_display') / case
+    org = organ_of(proj, case)
 
     def _mask():
         mf = chain.mask_file(proj, case)
         return str(mf) if mf else str(roi / 'Mask.mat')
 
     return {
-        'm1_recon': dict(inp=dicom_src or '', out=str(rd)),
+        'm_import': dict(inp=data_src or '', out=str(p), organ=org),
+        'm1_recon': dict(inp=dicom_src or '', out=str(rd), organ=org),
         'm_roi': dict(inp=str(rd), out=str(roi), mask=_mask(),
-                      roi_total=str(roi / 'ROI_total.mat')),
-        'm3_post': dict(inp=str(rd), out=str(post), mask=_mask()),
-        'm4_ld': dict(inp=str(rd), out=str(ld), mask=_mask()),
+                      roi_total=str(roi / 'ROI_total.mat'), organ=org),
+        'm3_post': dict(inp=str(rd), out=str(post), mask=_mask(), organ=org),
+        'm4_ld': dict(inp=str(rd), out=str(ld), mask=_mask(), organ=org),
         'm5_prf': dict(inp=proj, out=str(p / R.cn_name('05_prf_extract'))),
         'm6_prf_analysis': dict(inp=proj, out=str(p / R.cn_name('06_prf_analysis'))),
-        'm2_display': dict(inp=str(rd), out=str(disp), mask=_mask()),
+        'm2_display': dict(inp=str(rd), out=str(disp), mask=_mask(), organ=org),
         'm0_check': dict(inp=proj, out=str(p / R.cn_name('logs'))),
     }
 
@@ -257,7 +294,7 @@ def describe(io: dict) -> str:
         lines.append(f'输出总目录：{io["proj"]}')
     if io.get('case'):
         lines.append(f'病例：{io["case"]}')
-    for mid, label in (('m1_recon', '①'), ('m_roi', '⑧'),
+    for mid, label in (('m_import', '⓪'), ('m1_recon', '①'), ('m_roi', '⑧'),
                        ('m3_post', '③'), ('m4_ld', '④'), ('m2_display', '②')):
         d = t.get(mid) or {}
         if d.get('out'):
