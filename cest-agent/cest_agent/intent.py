@@ -21,9 +21,12 @@ STAGE_ALIAS = [
     ('m3_post', r'后处理|post|插值|b0|③'),
     ('m4_ld', r'ld|逐体素|洛伦兹|拟合|④'),
     ('m2_display', r'展示|出图|图谱|display|②'),
-    ('m5_prf', r'prf|提取|⑤'),
-    ('m6_prf_analysis', r'分析|随机森林|rf|⑥'),
+    ('m5_prf', r'prf(?!\s*分析)|训练集|⑤'),
+    ('m6_prf_analysis', r'prf\s*分析|随机森林|分析|⑥'),
 ]
+
+# 「掩膜提取」「数据提取」说的是 ⓪ 的两种模式，不是 ⑤，先剔掉再匹配阶段
+_IMPORT_EXTRACT = r'(掩模|掩膜|数据|roi|mask|器官|部位)\s*提取'
 
 ALL_STAGES = ('m1_recon', 'm_roi', 'm3_post', 'm4_ld')
 
@@ -43,11 +46,21 @@ def local(text: str) -> dict:
 
     force = bool(re.search(r'重跑|force|覆盖|重做|强跑', low))
 
+    # 先把「导入重建」和「掩膜提取 / 数据提取」这类 ⓪ 的说法归一化：
+    #   「导入重建」里的「重建」不该再算成 ①；
+    #   「掩膜提取」等价于「掩膜 + 导入」，别被 ⑤ 抢走。
+    def _norm(m):
+        word = m.group(1)
+        return '掩膜 导入' if word in ('掩模', '掩膜', 'mask', 'roi', '器官', '部位') else '导入'
+    scan_t = re.sub(_IMPORT_EXTRACT, _norm, t)
+    scan_t = re.sub(r'导入\s*重建', '导入', scan_t)
+    scan_low = scan_t.lower()
+
     stages, hits = [], []
     for mid, pat in STAGE_ALIAS:
-        if re.search(pat, low):
+        if re.search(pat, scan_low):
             stages.append(mid)
-            hits.append(re.search(pat, low).group(0))
+            hits.append(re.search(pat, scan_low).group(0))
     # 「只跑 ③④」这类：按出现顺序保留
     if stages:
         seen, uniq = set(), []
@@ -64,13 +77,16 @@ def local(text: str) -> dict:
         stages = list(ALL_STAGES)
 
     cases = []
+    all_cases = False
     m = re.search(r'病例\s*[:：]?\s*([^\s，,。]+)', t)
     if m:
         cases = [x.strip() for x in re.split(r'[、,，/]', m.group(1)) if x.strip()]
-    if re.search(r'全部|所有|都跑|all', low):
+    if re.search(r'全部|所有|都跑|每个|每例|all', low):
         cases = []
+        all_cases = True
 
     return dict(action=action, stages=stages, cases=cases, force=force,
+                all_cases=all_cases,
                 note=('识别到：' + '、'.join(hits)) if hits else '')
 
 

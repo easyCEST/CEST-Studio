@@ -18,7 +18,7 @@ import time
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QFileDialog, QFormLayout,
                                QGridLayout, QGroupBox, QHBoxLayout, QLabel,
@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog,
                                QScrollArea, QSplitter, QTextBrowser,
                                QVBoxLayout, QWidget)
 
-from . import chat, config, intent, layout, plan, report, runner
+from . import agent, chat, config, intent, layout, plan, report, runner
 from .report import STAGE_NAME
 
 STAGE_ORDER = ('m_import', 'm1_recon', 'm_roi', 'm3_post', 'm4_ld', 'm2_display')
@@ -128,6 +128,81 @@ class AgentWorker(QThread):
         self.sig_done.emit(self.result)
 
 
+class AgentChatWorker(QThread):
+    """大模型对话线程：模型决定调什么工具，工具在**本线程**里真跑。
+
+    ★ 长任务（③ 后处理几分钟）也在这个线程里跑，所以界面不会卡。
+    频率表核对仍复用 AgentWorker 那套信号：发出去、阻塞等主线程回填。
+    """
+
+    sig_status = Signal(str)                # 思考/工具进度（一句话）
+    sig_say = Signal(str)                   # 最终人话
+    sig_event = Signal(object)              # runner 事件（日志/进度）
+    sig_freq = Signal(str, object)          # 频率表核对
+    sig_code = Signal(str)                  # 要跑代码，请主线程确认
+    sig_fail = Signal(str)                  # 出错（GUI 据此退回本地规则）
+
+    def __init__(self, sess, text, parent=None):
+        super().__init__(parent)
+        self.sess = sess
+        self.text = text
+        self._cancel = False
+        self._freq_gate: dict = {}
+        self._freq_wait: dict = {}
+        self._code_gate = None
+        self._code_answer = None
+        # 把 session 的回调接到本线程信号
+        sess.emit = self.sig_event.emit
+        sess.cancel = lambda: self._cancel
+        sess.confirm_freq = self._confirm
+        sess.confirm_python = self._confirm_code
+
+    def cancel(self):
+        self._cancel = True
+        for ev in list(self._freq_wait.values()):
+            ev.set()
+        if self._code_gate is not None:
+            self._code_gate.set()
+
+    def set_freq_answer(self, case, answer):
+        self._freq_gate[case] = answer
+        ev = self._freq_wait.get(case)
+        if ev is not None:
+            ev.set()
+
+    def set_code_answer(self, ok: bool):
+        self._code_answer = bool(ok)
+        if self._code_gate is not None:
+            self._code_gate.set()
+
+    def _confirm_code(self, code: str) -> bool:
+        if self._cancel:
+            return False
+        gate = threading.Event()
+        self._code_gate = gate
+        self._code_answer = None
+        self.sig_code.emit(str(code))
+        gate.wait()
+        return bool(self._code_answer)
+
+    def _confirm(self, case, info):
+        if self._cancel:
+            return None
+        gate = threading.Event()
+        self._freq_wait[case] = gate
+        self._freq_gate.pop(case, None)
+        self.sig_freq.emit(case, info)
+        gate.wait()
+        return self._freq_gate.get(case)
+
+    def run(self):
+        try:
+            text = self.sess.send(self.text, on_say=self.sig_status.emit)
+            self.sig_say.emit(text)
+        except Exception as e:                           # noqa: BLE001
+            self.sig_fail.emit(f'{type(e).__name__}: {e}')
+
+
 class _StatusDot(QWidget):
     """纯绘制的状态点（不走字体，避免字形回退成方框）。"""
 
@@ -207,6 +282,11 @@ class AgentPanel(QWidget):
         self._rows = {}
         self._io = {}
         self._cfg = config.load()
+        self._pending_loose = []      # 链跑完后要接着跑的 ⑤⑥⑦
+        self._loose_queue = []        # 纯 ⑤⑥⑦ 的逐个执行队列
+        self._loose_all = []
+        self._chat: agent.Session | None = None
+        self._chat_worker = None
         self._build()
 
     # ------------------------------------------------------------------ UI
@@ -421,10 +501,11 @@ class AgentPanel(QWidget):
         hq = QHBoxLayout()
         hq.setSpacing(6)
         self.edit_q = QLineEdit()
-        self.edit_q.setPlaceholderText('只跑 ④ ／ 跑到 LD ／ 缺什么 ／ 第 7 层为什么挂了')
+        self.edit_q.setPlaceholderText('⑥ 用组间模式分析 ／ 跑到 LD ／ 还缺什么 ／ 刚才那例重跑')
         self.edit_q.returnPressed.connect(self._on_ask)
         b_ask = QPushButton('发送')
         b_ask.clicked.connect(self._on_ask)
+        self.b_ask = b_ask
         hq.addWidget(self.edit_q, 1)
         hq.addWidget(b_ask)
         rv.addLayout(hq)
@@ -437,14 +518,25 @@ class AgentPanel(QWidget):
         root.addWidget(split)
 
         self._on_mode_changed()
-        self._say(
-            '我是 CEST 智能体。**可以只跑一个模块**，也可以串整条链——'
-            '左边选「只跑一个模块」，就只动那一页，不跑上游。\n\n'
-            '两点先说清楚：\n'
-            '　· **掩模和器官 ROI 必须你手画**——缺了我停下，把你送到 ⑧ 页，不代生成。\n'
-            '　· 手上只有扫描原始数据（S0 + Z 谱）就先跑 ⓪ 导入重建，由它组装成 ① 的输入。\n'
-            '　· **频率表**我先自动检索，检索到了也要你核对过才写进去。\n\n'
-            '输入目录选原始 DICOM（或某个病例/结果目录），我自动认出病例和输出位置。')
+        cfg_llm = config.llm_cfg(self._cfg)
+        if cfg_llm:
+            self._say(
+                f'我是 CEST 智能体（大模型：{cfg_llm.get("model", "")}）。'
+                '**直接跟我说人话就行**：\n\n'
+                '　· 「⑥ 用组间模式重新分析一遍」——我会去看参数表，把 mode 设成组间再跑\n'
+                '　· 「跑到 LD」「只跑后处理」「刚才那例重跑」\n'
+                '　· 「还缺什么」「ctrl 现在到哪一步了」\n\n'
+                '两条红线我不越：**掩模/ROI 必须你手画**（缺了把你送到 ⑧ 页）；'
+                '**频率表**必须你核对过才写进去。')
+        else:
+            self._say(
+                '我是 CEST 智能体。**可以只跑一个模块**，也可以串整条链——'
+                '左边选「只跑一个模块」，就只动那一页，不跑上游。\n\n'
+                '两点先说清楚：\n'
+                '　· **掩模和器官 ROI 必须你手画**——缺了我停下，把你送到 ⑧ 页，不代生成。\n'
+                '　· 手上只有扫描原始数据（S0 + Z 谱）就先跑 ⓪ 导入重建，由它组装成 ① 的输入。\n'
+                '　· **频率表**我先自动检索，检索到了也要你核对过才写进去。\n\n'
+                '（当前没启用大模型，只能按关键词识别指令。填了 key 我就能听懂人话了。）')
 
     # -------------------------------------------------------------- 小工具
     def _say(self, text: str, kind: str = 'info'):
@@ -634,12 +726,12 @@ class AgentPanel(QWidget):
         try:
             if case:
                 res = plan.check_case(proj, case, self._sel_stages(),
-                                      force=self.chk_force.isChecked())
+                                      force=self.chk_force.isChecked(), io=self._io)
                 self._paint([res])
                 self.lbl_next.setText(res.get('next_action', {}).get('text', ''))
             else:
                 res = plan.check(proj, '', self._sel_stages(),
-                                 force=self.chk_force.isChecked())
+                                 force=self.chk_force.isChecked(), io=self._io)
                 if res.get('error'):
                     self.lbl_next.setText(res['error'])
                     return
@@ -774,10 +866,12 @@ class AgentPanel(QWidget):
             if not cfg_stages:
                 QMessageBox.information(self, '没勾阶段', '至少勾一个阶段。')
                 return
-            cases = [case] if case else plan.cases_of(proj)
+            cases = [case] if case else (
+                plan.cases_of(proj) or list((self._io or {}).get('cases') or []))
             if not cases:
                 QMessageBox.information(
-                    self, '没有病例', 'PROJ 的 01_重建 下还没有病例。')
+                    self, '没有病例',
+                    '还没认出任何病例。请在上方「输入」里选数据/掩模/DICOM 总目录。')
                 return
             self.bar.setRange(0, 100)
             self.bar.setValue(0)
@@ -819,8 +913,13 @@ class AgentPanel(QWidget):
         except Exception as e:                           # noqa: BLE001
             self._say(f'频率表核对对话框出错：{type(e).__name__}: {e}', 'err')
         finally:
-            if self._worker is not None:
-                self._worker.set_freq_answer(case, answer)
+            w = None
+            if self._chat_worker is not None and self._chat_worker.isRunning():
+                w = self._chat_worker
+            elif self._worker is not None:
+                w = self._worker
+            if w is not None:
+                w.set_freq_answer(case, answer)
 
     # --------------------------------------------------------------- 事件
     def _on_event(self, e: dict):
@@ -893,17 +992,120 @@ class AgentPanel(QWidget):
             self.main.log(f'[智能体] {res.get("summary", "")}')
         except Exception:                                # noqa: BLE001
             pass
+        # 链跑完后，接着跑指令里剩下的 ⑤⑥⑦（或纯 ⑤⑥ 队列的下一项）
+        q = list(getattr(self, '_loose_queue', None) or [])
+        if q:
+            QTimer.singleShot(200, self._next_loose)
+        elif getattr(self, '_pending_loose', None):
+            pend = list(self._pending_loose)
+            self._pending_loose = []
+            self._run_loose(pend)
 
     # --------------------------------------------------------------- 追问
     def _on_ask(self):
         q = self.edit_q.text().strip()
         if not q:
             return
+        cfg_llm = config.llm_cfg(self._cfg)
+        if cfg_llm:
+            self.edit_q.clear()
+            self._say_user(q)
+            self._ask_llm(q, cfg_llm)
+            return
+        # 没配大模型 → 老路（本地规则）
         self.edit_q.clear()
         self._say_user(q)
-        req = intent.parse(q, config.llm_cfg(self._cfg))
+        self._on_ask_local(q)
+
+    # ---- 大模型主导：模型自己决定调什么工具、传什么参数 ----
+    def _ask_llm(self, q: str, cfg_llm: dict):
+        if self._chat is None:
+            self._chat = agent.Session(cfg_llm, cfg_all=self._cfg)
+        self._chat.cfg = cfg_llm
+        self._chat.cfg_all = self._cfg
+        self._chat.bind(proj=self._proj(), io=self._io)
+
+        self.edit_q.setEnabled(False)
+        self.b_ask.setEnabled(False)
+        self.lbl_step.setText('模型正在思考…')
+
+        w = AgentChatWorker(self._chat, q, parent=self)
+        w.sig_status.connect(self._on_chat_status)
+        w.sig_say.connect(self._on_chat_answer)
+        w.sig_event.connect(self._on_event)
+        w.sig_freq.connect(self._on_freq_ask)
+        w.sig_code.connect(self._on_code_ask)
+        w.sig_fail.connect(lambda e: self._on_chat_fallback(q, e))
+        self._chat_worker = w
+        w.start()
+
+    # ---- 跑代码前确认（信号必须在主线程弹窗）----
+    def _on_code_ask(self, code: str):
+        ok = False
+        try:
+            ok = CodeConfirmDialog.ask(self, code)
+        except Exception as e:                           # noqa: BLE001
+            self._say(f'代码确认对话框出错：{e}', 'err')
+        finally:
+            w = self._chat_worker
+            if w is not None:
+                w.set_code_answer(ok)
+
+    def _on_chat_status(self, s: str):
+        if s == 'thinking':
+            self.lbl_step.setText('模型正在思考…')
+        elif s == 'tool':
+            self.lbl_step.setText('模型正在调工具…')
+        elif s:
+            self._log(f'[模型] {s}')
+            self.lbl_step.setText(str(s)[:130])
+
+    def _on_chat_answer(self, text: str):
+        self.edit_q.setEnabled(True)
+        self.b_ask.setEnabled(True)
+        self.edit_q.setFocus()
+        self.lbl_step.setText('')
+        self._say(text, 'info')
+        self._refresh_preview()
+        try:
+            self.main.log(f'[智能体] {str(text)[:200]}')
+        except Exception:                                # noqa: BLE001
+            pass
+
+    def _on_chat_fallback(self, q: str, err: str):
+        """接口挂了 / 没 key / 网络断 → 退回本地规则，别让界面变成死的。"""
+        self.edit_q.setEnabled(True)
+        self.b_ask.setEnabled(True)
+        self.lbl_step.setText('')
+        self._say(f'大模型调用失败（{err}），已退回本地规则。', 'warn')
+        self._on_ask_local(q)
+
+    # ---- 本地规则（降级路径，原逻辑保持不动）----
+    def _on_ask_local(self, q: str):
+        req = intent.parse(q, {})          # ★ 只走正则，不再让 LLM 兜底
         if req.get('action') == 'run' and req.get('stages'):
             st = req['stages']
+            if req.get('cases'):
+                for c in req['cases']:
+                    i = self.cmb_case.findText(c)
+                    if i >= 0:
+                        self.cmb_case.setCurrentIndex(i)
+                        break
+            if req.get('all_cases'):
+                # 指令说「全部/所有/都跑」→ 病例框切回（全部病例）
+                self.cmb_case.setCurrentIndex(0)
+            self.chk_force.setChecked(bool(req.get('force')))
+
+            # ⑤⑥⑦ 不进链条：它是跨病例/自检模块，链里没有这两个阶段。
+            # 单跑一个，或按顺序逐个跑（不许把 ⑤⑥ 塞进 chk_stages —— 那六格没有它们）
+            chainable = [s for s in st if s in STAGE_ORDER]
+            loose = [s for s in st if s in RUNNABLE and s not in STAGE_ORDER]
+
+            if loose and not chainable:
+                # 全是可以单跑的模块：一个就单跑，多个按顺序逐个跑
+                self._run_loose(loose, st)
+                return
+
             if len(st) == 1 and st[0] in RUNNABLE:
                 i = self.cmb_mod.findData(st[0])
                 if i < 0:
@@ -913,26 +1115,45 @@ class AgentPanel(QWidget):
                 self.rb_single.setChecked(True)
             else:
                 self.rb_chain.setChecked(True)
+                sel = chainable or list(STAGE_ORDER)
                 for mid in STAGE_ORDER:
                     if mid in self.chk_stages:
-                        self.chk_stages[mid].setChecked(mid in st)
-            if req.get('cases'):
-                for c in req['cases']:
-                    i = self.cmb_case.findText(c)
-                    if i >= 0:
-                        self.cmb_case.setCurrentIndex(i)
-                        break
-            self.chk_force.setChecked(bool(req.get('force')))
+                        self.chk_stages[mid].setChecked(mid in sel)
             self._say('按你的话，准备跑：'
                       + ' → '.join(STAGE_TITLE.get(s, _module_title(s)) for s in st)
                       + ('　（强制重跑）' if req.get('force') else ''))
             self._refresh_preview()
             self._on_run()
+            if loose:
+                # 链跑完再接着跑 ⑤⑥（_on_done 里用 _pending_loose 接着跑）
+                self._pending_loose = list(loose)
             return
         if req.get('action') == 'check':
             self._on_check()
             return
         self._say(chat.answer(q, self._last_result, config.llm_cfg(self._cfg)))
+
+    # ---- ⑤⑥⑦ 这类不进链的模块：按顺序逐个单跑 ----
+    def _run_loose(self, mids, all_stages=None):
+        self._loose_queue = list(mids)
+        self._loose_all = list(all_stages or mids)
+        self._say('按你的话，准备跑：'
+                  + ' → '.join(_module_title(s) for s in self._loose_all))
+        self._next_loose()
+
+    def _next_loose(self):
+        if not self._loose_queue:
+            self._loose_queue = []
+            self._refresh_preview()
+            return
+        mid = self._loose_queue.pop(0)
+        self.rb_single.setChecked(True)
+        i = self.cmb_mod.findData(mid)
+        if i >= 0:
+            self.cmb_mod.setCurrentIndex(i)
+        if self._loose_queue:
+            self._say(f'接着跑 {_module_title(mid)}（还剩 {len(self._loose_queue)} 个）')
+        self._on_run()
 
     # --------------------------------------------------------------- 其他
     def _on_export(self):
@@ -1022,6 +1243,43 @@ class LLMSettingsDialog(QDialog):
         form.addRow('模型名', self.e_model)
         v.addLayout(form)
 
+        # ---------------- 权限 ----------------
+        from . import grants as _G
+        g = _G.cfg_of({'grants': llm.get('grants')})
+        gp = QGroupBox('智能体权限（决定它能碰什么）')
+        gv = QFormLayout(gp)
+
+        self.cb_level = QComboBox()
+        for lv in _G.LEVELS:
+            self.cb_level.addItem(_G.LEVEL_LABEL[lv], lv)
+        i = self.cb_level.findData(g.get('level') or 'proj')
+        self.cb_level.setCurrentIndex(max(0, i))
+        gv.addRow('可访问范围', self.cb_level)
+        self.lbl_level_tip = QLabel(_G.LEVEL_TIP.get(g.get('level') or 'proj', ''))
+        self.lbl_level_tip.setWordWrap(True)
+        self.lbl_level_tip.setObjectName('muted')
+        gv.addRow('', self.lbl_level_tip)
+        self.cb_level.currentIndexChanged.connect(self._on_level_changed)
+
+        self.c_py = QCheckBox('允许执行 Python 代码')
+        self.c_py.setChecked(bool(g.get('allow_python')))
+        gv.addRow('', self.c_py)
+
+        self.c_pycf = QCheckBox('每次执行代码前先问我')
+        self.c_pycf.setChecked(bool(g.get('confirm_python', True)))
+        gv.addRow('', self.c_pycf)
+
+        self.c_wo = QCheckBox('允许写项目目录以外的文件')
+        self.c_wo.setChecked(bool(g.get('allow_write_out')))
+        gv.addRow('', self.c_wo)
+
+        lock = QLabel('🔒 硬限制：智能体只能调用代码，不能修改程序源代码。'
+                      '这一条与上面权限无关，永远生效。')
+        lock.setWordWrap(True)
+        lock.setStyleSheet('color:#c0392b;')
+        gv.addRow('', lock)
+        v.addWidget(gp)
+
         self.lbl_test = QLabel('')
         self.lbl_test.setWordWrap(True)
         v.addWidget(self.lbl_test)
@@ -1064,6 +1322,11 @@ class LLMSettingsDialog(QDialog):
                 msg += f'\n{r["hint"]}'
             self.lbl_test.setText(msg)
 
+    def _on_level_changed(self):
+        from . import grants as _G
+        lv = self.cb_level.currentData()
+        self.lbl_level_tip.setText(_G.LEVEL_TIP.get(lv, ''))
+
     def _on_ok(self):
         c = self._cfg()
         if self.c_en.isChecked() and not (c['base_url'] and c['api_key'] and c['model']):
@@ -1075,7 +1338,42 @@ class LLMSettingsDialog(QDialog):
     def result_cfg(self) -> dict:
         c = self._cfg()
         c['enabled'] = bool(self.c_en.isChecked())
+        c['grants'] = dict(
+            level=self.cb_level.currentData() or 'proj',
+            allow_python=bool(self.c_py.isChecked()),
+            confirm_python=bool(self.c_pycf.isChecked()),
+            allow_write_out=bool(self.c_wo.isChecked()))
         return c
+
+
+class CodeConfirmDialog(QDialog):
+    """跑 Python 代码前给人看一遍。代码只读展示，人确认才执行。"""
+
+    def __init__(self, parent, code: str):
+        super().__init__(parent)
+        self.setWindowTitle('智能体要执行代码')
+        self.setMinimumWidth(680)
+        v = QVBoxLayout(self)
+        tip = QLabel('智能体想在项目解释器里跑下面这段 Python（工作目录 = PROJ）。\n'
+                     '看一遍再决定：看不懂或觉得不对就点取消。')
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        self.view = QPlainTextEdit()
+        self.view.setPlainText(code)
+        self.view.setReadOnly(True)
+        self.view.setMinimumHeight(260)
+        v.addWidget(self.view)
+        bb = QDialogButtonBox()
+        self.b_ok = bb.addButton('允许执行', QDialogButtonBox.ButtonRole.AcceptRole)
+        bb.addButton('取消', QDialogButtonBox.ButtonRole.RejectRole)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+    @staticmethod
+    def ask(parent, code: str) -> bool:
+        d = CodeConfirmDialog(parent, code)
+        return d.exec() == QDialog.DialogCode.Accepted
 
 
 class FreqConfirmDialog(QDialog):

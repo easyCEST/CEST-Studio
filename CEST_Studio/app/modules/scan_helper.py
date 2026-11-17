@@ -101,9 +101,14 @@ def short_case(stem: str) -> str:
 
 
 # ---------------------------------------------------------------- 数据模式
-def _is_z_candidate(var, shape):
-    """Z 谱：3D/4D，最后一维像频率点（>=8），且不是掩模/w/b0。"""
+def _is_z_candidate(var, shape, allow=()):
+    """Z 谱：3D/4D，最后一维像频率点（>=8），且不是掩模/w/b0。
+
+    allow = 额外认可为 Z 谱的变量名（如 ('v_exp',) —— 手上只有这种数据时用）。
+    """
     low = var.lower()
+    if low in [str(x).lower() for x in allow]:
+        return bool(shape) and len(shape) in (3, 4) and shape[-1] >= 8
     if low in MASK_SKIP_VARS or 'mask' in low or low in ('w_offset', 'w', 'b0'):
         return False
     if not shape or len(shape) not in (3, 4):
@@ -163,19 +168,43 @@ def _w_spec_of(path):
         return 0, ''
 
 
-def scan_data(root):
-    """扫数据目录 → 行列表。**每个含 Z 谱的 .mat 单独一行**（同目录多个也不合并）。"""
+def _is_weak_z_shape(var, shape):
+    """像 Z 谱但名字是后处理产物（V_exp / V_as …）：3D/4D 且末维像频点。"""
+    low = str(var).lower()
+    if low in MASK_SKIP_VARS or 'mask' in low or low in ('w_offset', 'w', 'b0',
+                                                         'x_as', 'xas'):
+        return False
+    if not shape or len(shape) not in (3, 4):
+        return False
+    if shape[-1] < 8:
+        return False
+    return low in WEAK_Z_VARS or low.startswith(WEAK_Z_VARS)
+
+
+# 后处理产物里，哪一套是「实际在用的」（31 点 V_exp）优先；V_as/201 点排后
+WEAK_Z_PRIORITY = ('v_exp', 'v_as')
+
+
+def scan_data(root, allow_z=()):
+    """扫数据目录 → 行列表。**每个含 Z 谱的 .mat 单独一行**（同目录多个也不合并）。
+
+    按变量名严格认（img_interp / zspect / norm_z / ssat…）。
+    严格一个都不认、目录里只有 V_exp / V_as 这类后处理产物时 → 兜底取最优先的一个
+    （V_exp 优先），否则这种数据在 ⓪ 里永远「没找到 Z 谱」。
+    """
     root = Path(root)
     # 先按目录收集 S0 / w 的来源（可能是单独的文件）
     dir_s0, dir_w = {}, {}
     zfiles = []
+    weak = {}
     for f in _iter_mats(root):
         head = mat_head(f)
         if not head:
             continue
         d = str(f.parent)
         s0 = next((n for n, s, _c in head if _is_s0(n, s)), None)
-        zs = [n for n, s, _c in head if _is_z_candidate(n, s)]
+        zs = [n for n, s, _c in head if _is_z_candidate(n, s, allow_z)]
+        zs_w = [n for n, s, _c in head if _is_weak_z_shape(n, s)]
         ws = next((n for n, s, _c in head if n.lower() in
                    [v.lower() for v in W_VARS]), None)
         if s0:
@@ -185,6 +214,21 @@ def scan_data(root):
         if zs:                       # 一个文件里多个 Z 变量 → 各占一行
             for zv in sorted(zs, key=_z_score, reverse=True):
                 zfiles.append((d, str(f), zv, head))
+        elif zs_w:                   # 只有 V_exp / V_as 这类 → 先记下，兜底用
+            for zv in zs_w:
+                weak.setdefault(d, []).append((str(f), zv, head))
+
+    # 兜底：严格一个 Z 谱都没认出来的目录，用最优先的后处理产物那套（V_exp > V_as）
+    _strict_dirs = {d for d, _p, _v, _h in zfiles}
+    def _wprio(item):
+        low = item[1].lower()
+        return (WEAK_Z_PRIORITY.index(low) if low in WEAK_Z_PRIORITY
+                else len(WEAK_Z_PRIORITY), low)
+    for d, items in weak.items():
+        if d in _strict_dirs:
+            continue
+        f, zv, head = sorted(items, key=_wprio)[0]
+        zfiles.append((d, f, zv, head))
 
     rows = []
     for d, zpath, zvar, head in sorted(zfiles):
