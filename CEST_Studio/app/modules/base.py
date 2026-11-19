@@ -57,6 +57,8 @@ class Module:
     #   两行 + 病例下拉框，并在输入是 PROJ 时用 chain 自动填下面这些参数。
     chain_proj: bool = False
     chain_fill: tuple = ()        # 自动填的参数字段名（'case' / 'src' / 'mask_file'）
+    # 直接吃 PROJ（不分病例）：不走单病例数据链，解析行改成「本页自己枚举病例」。
+    proj_direct: bool = False
 
     # ---- 批量模式（可选）----
     # 当 chain_batch_field 这个参数的值以 chain_batch_values 里任一前缀开头时，
@@ -97,6 +99,10 @@ class Module:
 
     def refresh_extra(self, panel, det, proj, params):
         pass
+
+    def dyn_default(self, key, opts, proj) -> str:
+        """动态下拉框首次填充时的默认选项（空 = 用第一项）。"""
+        return ''
 
     def presets(self) -> dict:
         """预设参数（名字 → {key: 值}），供「高级参数…」对话框一键套用。"""

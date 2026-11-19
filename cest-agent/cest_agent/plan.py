@@ -29,6 +29,7 @@ STAGE_LABEL = {
     'm2_display': '② 展示',
     'm5_prf': '⑤ PRF提取',
     'm6_prf_analysis': '⑥ PRF分析',
+    'm7_compare': '⑩ 图像对比',
     'm0_check': '⑦ 自检',
 }
 

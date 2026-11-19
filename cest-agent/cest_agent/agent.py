@@ -18,9 +18,10 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
-MAX_ROUNDS = 12                       # 单轮对话里最多几次工具往返
+MAX_ROUNDS = 40                       # 单轮对话里最多几次工具往返（原来 12 太少，查几层目录就见底）
 
 # ============================================================ 工具实现
 def _tool_list_cases(proj, io, args):
@@ -169,6 +170,17 @@ def _proj_map(proj, io, args):
         m6[folder] = item
     info['⑥ PRF分析'] = m6
 
+    # ---- ⑩ 图像对比：已有哪些对比对 ----
+    d10 = _sub('10_compare')
+    pairs = []
+    if d10:
+        try:
+            pairs = sorted([x.name for x in d10.iterdir() if x.is_dir()])
+        except OSError:
+            pass
+    info['⑩ 图像对比'] = dict(exists=bool(d10), path=str(d10) if d10 else '',
+                              n=len(pairs), pairs=pairs[:12])
+
     # ---- 阶段完成度（只看数据链）----
     st = {}
     try:
@@ -240,6 +252,36 @@ def _tool_run_module(proj, case, io, args, emit, cancel, confirm_freq):
         if not ok:
             return dict(ok=False, rejected=True, need_human=True, error=why,
                         goto=dict(mid='m_roi', case=case))
+
+    # ⑩ 图像对比：要 A / B 两个病例，不吃单个 case；两例都得有掩模
+    if mid == 'm7_compare':
+        for key in ('case_a', 'case_b'):
+            if not str(params.get(key) or '').strip():
+                v = str(args.get(key) or '').strip()
+                if v:
+                    params[key] = v
+        if not (str(params.get('case_a') or '').strip()
+                and str(params.get('case_b') or '').strip()):
+            # 没指定就按模块自己的建议（默认 GS / SSE 那例）自动配一对
+            try:
+                sug = runner._module(mid).suggest(None, proj) or {}
+                params.setdefault('case_a', sug.get('case_a') or '')
+                params.setdefault('case_b', sug.get('case_b') or '')
+            except Exception:                            # noqa: BLE001
+                pass
+        for key in ('case_a', 'case_b'):
+            c = str(params.get(key) or '').strip()
+            if not c:
+                return dict(ok=False, error='⑩ 需要两个不同病例做对比，但 PROJ 里只认出 '
+                                            f'一个（{key} 是空的）。先用 get_status 看病例。')
+            ok, why = _need_mask(proj, c)
+            if not ok:
+                return dict(ok=False, rejected=True, need_human=True, error=why,
+                            goto=dict(mid='m_roi', case=c))
+        if str(params['case_a']).strip() == str(params['case_b']).strip():
+            return dict(ok=False, error=f'⑩ 的病例 A 和病例 B 都是 '
+                                        f'{params["case_a"]}，没有可比的，换一个。')
+        case = ''
 
     # 校验 params 的 choice 值，避免模型瞎填被静默吞掉
     m = runner._module(mid)
@@ -462,6 +504,15 @@ def _tool_set_project(sess, args):
         if not v:
             continue
         ok, rp, why = grants.check_read(v, g['level'], sess.proj or proj)
+        if not ok and label == 'proj':
+            # 新项目目录可能还不存在：退一步按父目录判权限
+            from pathlib import Path as _P
+            par = _P(v).parent
+            ok2, _, why2 = grants.check_read(par, g['level'], sess.proj or str(par))
+            if ok2:
+                ok = True
+            else:
+                return dict(ok=False, error=f'{label}：{why2 or why}')
         if not ok:
             return dict(ok=False, error=f'{label}：{why}')
 
@@ -474,6 +525,12 @@ def _tool_set_project(sess, args):
     if not sess.io and sess.proj:
         try:
             sess.io = layout.resolve_io(sess.proj, sess.proj, case)
+        except Exception:                                # noqa: BLE001
+            pass
+    # 让界面上的「输入/输出」框跟着变，否则下一轮会被界面旧值覆盖回去
+    if callable(getattr(sess, 'on_project', None)):
+        try:
+            sess.on_project(sess.proj, dict(sess.src))
         except Exception:                                # noqa: BLE001
             pass
     return dict(ok=True, proj=sess.proj, **sess.src,
@@ -581,10 +638,17 @@ def _tool_run_python(sess, args):
                         error='用户拒绝了这次代码执行。可以用别的方式做，或先问清楚。')
     timeout = max(5, min(int(args.get('timeout') or 120), 1800))
     exe = paths.python_exe()
+    # ★ Windows 上不带 creationflags 会闪一个黑框（控制台窗口），
+    #   CREATE_NO_WINDOW 让子进程不建控制台，界面才不会被闪屏干扰。
+    flags = 0
+    if os.name == 'nt':
+        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
     try:
         pr = subprocess.run([exe, '-c', code], cwd=sess.proj or None,
                             capture_output=True, text=True, timeout=timeout,
-                            encoding='utf-8', errors='replace')
+                            encoding='utf-8', errors='replace',
+                            creationflags=flags,
+                            stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return dict(ok=False, error=f'执行超过 {timeout}s 被中止')
     except Exception as e:                               # noqa: BLE001
@@ -631,9 +695,12 @@ TOOLS = [
         parameters=dict(type='object', properties=dict(
             mid=dict(type='string'),
             case=dict(type='string', description='病例名'),
+            case_a=dict(type='string', description='⑩ 图像对比的病例 A'),
+            case_b=dict(type='string', description='⑩ 图像对比的病例 B'),
             params=dict(type='object',
                         description='模块参数，key 见 get_module_schema；'
-                                    '例如 ⑥ 组间分析：{"mode":"组间"}')),
+                                    '例如 ⑥ 组间分析：{"mode":"组间"}；'
+                                    '⑩ 对比：{"case_a":"GS","case_b":"XXX","mode":"ST","w":3.5}')),
             required=['mid']))),
     dict(type='function', function=dict(
         name='run_chain',
@@ -733,8 +800,9 @@ SYSTEM = """你是 CEST Studio 的数据处理智能体，代替用户操作这�
   m2_display    ② 多层图谱展示
   m5_prf        ⑤ PRF 提取（训练集 → *Paths.mat）
   m6_prf_analysis  ⑥ PRF 分析（随机森林特征重要性）
+  m7_compare    ⑩ 图像对比（两病例并排：多层 A/B/|A−B| + 单层 ROI 曲线）
 数据链 = m_import/m1_recon/m_roi/m3_post/m4_ld/m2_display（run_chain 只收这些）
-⑤ ⑥ 是跨病例模块，只能 run_module 单独跑，不能进 run_chain。
+⑤ ⑥ ⑩ 是跨病例模块，只能 run_module 单独跑，不能进 run_chain。
 
 铁律（违反会被工具直接拒绝，不要试）：
 1. 去噪掩模、器官 ROI 必须用户人工画或由用户提供。
@@ -794,6 +862,10 @@ class Session:
         self.confirm_python = confirm_python        # code -> bool（跑代码前问用户）
         self.messages: list = []          # 多轮历史（含工具往返）
         self.last_result = None
+        # 模型用 set_project 改了目录后，通知界面把左侧输入/输出框同步过去。
+        # ★ 不接这个回调的话，下一轮 bind() 会用界面里的旧值把 PROJ 覆盖回去，
+        #   模型就会以为没设成功、反复重设，最后撞上工具轮数上限。
+        self.on_project = None            # (proj, src_dict) -> None
 
     # ---------------------------------------------------------- 可用性
     @property
@@ -981,4 +1053,6 @@ class Session:
                 if self.cancel():
                     return '已取消。'
 
-        return '这一轮工具调用太多了，我先停下。要不要说得更具体一点？'
+        return (f'这一轮我调了 {MAX_ROUNDS} 次工具还没收尾（通常是在反复试路径）。'
+                '**是我这边的循环上限到了，不是你指令的问题。**\n\n'
+                '你直接说一句「继续」，我会接在刚才的进度上往下做。')

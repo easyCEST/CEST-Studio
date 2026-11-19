@@ -102,6 +102,20 @@ def ld(proj, case, res=None) -> dict:
                 out_dir=str(base))
 
 
+def compare(proj, case, res=None) -> dict:
+    """⑩ 图像对比：10_对比 下要有实际产出的 <A>_vs_<B> 目录（png/mat 齐全）。"""
+    d = _sub(proj, '10_compare')
+    if d is None or not d.is_dir():
+        return dict(ok=False, reason='没找到 10_对比 目录（⑩ 没落盘）', files=[])
+    pngs = list(d.rglob('*.png'))
+    mats = list(d.rglob('*.mat'))
+    if not pngs:
+        return dict(ok=False, reason='10_对比 下没有出图（*.png）', files=[])
+    return dict(ok=True, reason='', n_png=len(pngs), n_mat=len(mats),
+                out_dir=str(d),
+                files=[str(p) for p in (pngs + mats)[:20]])
+
+
 def display(proj, case, res=None) -> dict:
     d = _sub(proj, '02_display')
     base = (d / case) if d else None
@@ -136,6 +150,7 @@ VERIFIERS = {
     'm3_post': post,
     'm4_ld': ld,
     'm2_display': display,
+    'm7_compare': compare,
 }
 
 

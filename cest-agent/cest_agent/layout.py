@@ -231,6 +231,29 @@ def resolve_io(src_path, proj_hint='', case='') -> dict:
         out['stages'] = targets(proj, case)
         return out
 
+    # ★ 关键：PROJ 已经给定时，以 PROJ 里的病例为准。
+    #   否则「输入 = 上级数据目录 + 输出 = PROJ」这种正常配法会被当成
+    #   「数据/掩模文件夹」，把 PROJ 里每个子目录都数成病例（214 个就是这么来的）。
+    if proj and Path(proj).is_dir():
+        try:
+            sp = sniff(proj)
+        except Exception:                                # noqa: BLE001
+            sp = {}
+        if sp.get('kind') == 'proj':
+            pcases = sp.get('cases') or []
+            if pcases:
+                out['kind'] = 'proj'
+                out['proj'] = proj
+                out['cases'] = pcases
+                case = case or pcases[0]
+                out['case'] = case
+                out['ok'] = True
+                out['note'] = (f'项目目录（PROJ）；输入另给了 {s["path"]}，'
+                               f'按病例 {len(pcases)} 例算')
+                out['stages'] = targets(proj, case, data_src=s['path'],
+                                        mask_src=s['path'])
+                return out
+
     if s['kind'] in ('dicom', 'dicom_root'):
         # 原始 DICOM：PROJ 必须另给（或用 hint）；病例名取 DICOM 目录名
         out['cases'] = s.get('cases') or [case] if case else s.get('cases') or []
@@ -326,6 +349,7 @@ def targets(proj, case, dicom_src='', data_src='', mask_src='') -> dict:
         'm5_prf': dict(inp=proj, out=str(p / R.cn_name('05_prf_extract'))),
         'm6_prf_analysis': dict(inp=proj, out=str(p / R.cn_name('06_prf_analysis'))),
         'm2_display': dict(inp=str(rd), out=str(disp), mask=_mask(), organ=org),
+        'm7_compare': dict(inp=proj, out=str(p / R.cn_name('10_compare'))),
         'm0_check': dict(inp=proj, out=str(p / R.cn_name('logs'))),
     }
 

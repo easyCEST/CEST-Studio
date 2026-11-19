@@ -15,7 +15,7 @@ UIH_RE = re.compile(r'^cest_tra_fast_10slice_0\.7ut_(S0|Ssat|B0Ma)_(\d+)$', re.I
 # PROJ 下的固定子目录。**写盘用中文名**（看不懂英文也能认）；
 # 旧的英文名也照样识别（已跑过的老项目不用改）。
 PROJ_SUBDIRS = ('00_roi', '01_recon', '02_display', '03_post',
-                '04_ld', '05_prf_extract', '06_prf_analysis', 'logs')
+                '04_ld', '05_prf_extract', '06_prf_analysis', '10_compare', 'logs')
 SUBDIR_CN = {
     '00_roi':          '00_掩模',
     '01_recon':        '01_重建',
@@ -24,6 +24,7 @@ SUBDIR_CN = {
     '04_ld':           '04_逐体素LD',
     '05_prf_extract':  '05_PRF提取',
     '06_prf_analysis': '06_PRF分析',
+    '10_compare':      '10_对比',
     'logs':            '日志',
 }
 

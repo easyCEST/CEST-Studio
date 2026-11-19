@@ -21,11 +21,11 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QFileDialog, QFormLayout,
-                               QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-                               QLineEdit, QMessageBox, QPlainTextEdit,
+                               QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+                               QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
                                QProgressBar, QPushButton, QRadioButton,
-                               QScrollArea, QSplitter, QTextBrowser,
-                               QVBoxLayout, QWidget)
+                               QScrollArea, QSizePolicy, QSplitter,
+                               QTextBrowser, QVBoxLayout, QWidget)
 
 from . import agent, chat, config, intent, layout, plan, report, runner
 from .report import STAGE_NAME
@@ -46,7 +46,7 @@ CASE_CN = {'ok': '全部完成', 'partial': '产物不全', 'fail': '失败',
 
 # 可以单独跑模块时提供的入口（⑧ 要手画掩模，不作为可执行模块）
 RUNNABLE = ('m_import', 'm1_recon', 'm3_post', 'm4_ld', 'm5_prf',
-            'm6_prf_analysis', 'm2_display', 'm0_check')
+            'm6_prf_analysis', 'm2_display', 'm7_compare', 'm0_check')
 
 
 def _module_title(mid: str) -> str:
@@ -141,6 +141,7 @@ class AgentChatWorker(QThread):
     sig_freq = Signal(str, object)          # 频率表核对
     sig_code = Signal(str)                  # 要跑代码，请主线程确认
     sig_fail = Signal(str)                  # 出错（GUI 据此退回本地规则）
+    sig_proj = Signal(str, object)          # 模型改了 PROJ，请主线程同步界面
 
     def __init__(self, sess, text, parent=None):
         super().__init__(parent)
@@ -156,6 +157,9 @@ class AgentChatWorker(QThread):
         sess.cancel = lambda: self._cancel
         sess.confirm_freq = self._confirm
         sess.confirm_python = self._confirm_code
+        # ★ 必须走信号：本线程重写了 run()，没有事件循环，
+        #   QTimer.singleShot 在里面永远不会触发（之前界面不同步就是这个原因）
+        sess.on_project = lambda p, src: self.sig_proj.emit(str(p or ''), dict(src or {}))
 
     def cancel(self):
         self._cancel = True
@@ -201,6 +205,219 @@ class AgentChatWorker(QThread):
             self.sig_say.emit(text)
         except Exception as e:                           # noqa: BLE001
             self.sig_fail.emit(f'{type(e).__name__}: {e}')
+
+
+# ============================================================ 聊天区（气泡式）
+def _h_unescape(s: str) -> str:
+    import html as _h
+    return _h.unescape(str(s or ''))
+
+
+def _md_inline(s: str) -> str:
+    """极简 Markdown 行内 → HTML：先转义，再还原 **粗体** `代码` 和路径。"""
+    import html as _h
+    import re as _re
+    out = _h.escape(str(s))
+    out = _re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', out)
+    out = _re.sub(r'`([^`]+?)`',
+                  r'<span style="background:#eef1f6;padding:0 3px;'
+                  r'border-radius:3px;">\1</span>', out)
+    return out
+
+
+def _md_block(text: str) -> str:
+    """把一段模型输出转成气泡内的 HTML（支持 ```代码块``` / - 列表 / 空行分段）。"""
+    import html as _h
+    import re as _re
+    s = str(text or '').replace('\r\n', '\n').replace('\r', '\n')
+    parts = _re.split(r'```', s)
+    buf = []
+    for i, seg in enumerate(parts):
+        if i % 2 == 1:                      # 代码块
+            body = _h.escape(seg.strip('\n'))
+            buf.append(
+                '<pre style="margin:6px 0;padding:8px 10px;background:#f4f6fa;'
+                'border-left:3px solid #b9c4d6;border-radius:5px;'
+                'font-family:Consolas,\'Cascadia Mono\',monospace;font-size:12px;'
+                'white-space:pre-wrap;color:#1f2937;">' + body + '</pre>')
+            continue
+        for line in seg.split('\n'):
+            if not line.strip():
+                buf.append('<div style="height:6px;"></div>')
+                continue
+            m = _re.match(r'^(\s*)[·•\-*]\s+(.*)$', line)
+            if m:
+                ind = 14 + len(m.group(1)) * 6
+                buf.append(
+                    f'<div style="margin:2px 0 2px {ind}px;text-indent:-12px;">'
+                    f'· {_md_inline(m.group(2))}</div>')
+                continue
+            m = _re.match(r'^(\s*)(#{1,4})\s+(.*)$', line)
+            if m:
+                buf.append('<div style="margin:8px 0 3px 0;font-weight:600;">'
+                           + _md_inline(m.group(3)) + '</div>')
+                continue
+            buf.append('<div style="margin:2px 0;">' + _md_inline(line) + '</div>')
+    return ''.join(buf)
+
+
+class ChatBubble(QFrame):
+    """一条消息。role: user / agent / sys / tool。"""
+
+    _STYLE = {
+        'user':  ('#3b6ea5', '#eaf1fa'),      # 你：右侧浅蓝
+        'agent': ('#334155', '#ffffff'),      # 智能体：左侧白卡
+        'sys':   ('#6b7280', '#f6f7f9'),      # 系统/过程：灰
+        'tool':  ('#7b8794', '#fbfcfd'),      # 工具调用：更淡
+        'warn':  ('#8a6120', '#fff8e8'),
+        'err':   ('#a33a2c', '#fdf0ee'),
+        'ok':    ('#1e7a4d', '#eefaf2'),
+    }
+    _WHO = {'user': '你', 'agent': 'CEST 智能体', 'sys': '系统',
+            'tool': '工具', 'warn': '提示', 'err': '错误', 'ok': '完成'}
+
+    def __init__(self, role: str, html_body: str, stamp: str = '',
+                 parent=None):
+        super().__init__(parent)
+        fg, bg = self._STYLE.get(role, self._STYLE['agent'])
+        self.setObjectName('chatBubble')
+        self.setStyleSheet(
+            f'QFrame#chatBubble{{background:{bg};border:1px solid #e3e8ef;'
+            f'border-radius:10px;}}')
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 8, 12, 10)
+        v.setSpacing(3)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        who = QLabel(self._WHO.get(role, role))
+        who.setStyleSheet(f'color:{fg};font-size:12px;font-weight:600;'
+                          f'background:transparent;border:none;')
+        head.addWidget(who)
+        head.addStretch(1)
+        if stamp:
+            t = QLabel(stamp)
+            t.setStyleSheet('color:#9aa4b2;font-size:11px;background:transparent;'
+                            'border:none;')
+            head.addWidget(t)
+        v.addLayout(head)
+        body = QLabel()
+        body.setObjectName('bubbleBody')
+        body.setTextFormat(Qt.TextFormat.RichText)
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        body.setStyleSheet(
+            'QLabel#bubbleBody{background:transparent;border:none;padding:0;'
+            'font-family:"Microsoft YaHei UI","Segoe UI",sans-serif;'
+            f'font-size:13px;color:{fg};}}')
+        body.setText(f'<div style="line-height:1.75;">{html_body}</div>')
+        body.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Minimum)
+        self._body = body
+        v.addWidget(body)
+        self._fitted = 0
+        # 用于估算「这条消息需要多宽」：把 HTML 标签剥掉，按最长行量一遍
+        import re as _re
+        self._plain = _re.sub(r'<[^>]+>', '', str(html_body)).replace('&nbsp;', ' ')
+        self._plain = _h_unescape(self._plain)
+
+    def _need_width(self) -> int:
+        """文字不换行时需要的宽度（最多取最长那行），用来决定气泡宽窄。"""
+        from PySide6.QtGui import QFontMetrics
+        fm = QFontMetrics(self._body.font())
+        lines = [ln for ln in self._plain.split('\n') if ln.strip()] or ['']
+        widest = max(fm.horizontalAdvance(ln) for ln in lines)
+        return widest + 34
+
+    def apply_width(self, avail: int, frac: float):
+        want = min(int(avail * frac), max(240, self._need_width()))
+        self.setFixedWidth(want)
+        self._fit()
+
+    def _fit(self):
+        """按当前宽度重算文字高度（QLabel 换行后必须显式给 min-height）。"""
+        w = max(120, self.width() - 26)
+        if w == self._fitted:
+            return
+        h = self._body.heightForWidth(w)
+        if h > 0:
+            self._body.setMinimumHeight(h)
+            self._fitted = w
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
+
+
+class ChatView(QScrollArea):
+    """滚动区 + 垂直堆叠的气泡列表。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._host = QWidget()
+        self._host.setStyleSheet('background:#f7f9fc;')
+        self._v = QVBoxLayout(self._host)
+        self._v.setContentsMargins(10, 10, 10, 10)
+        self._v.setSpacing(8)
+        self._v.addStretch(1)
+        self.setWidget(self._host)
+        self._n = 0
+
+    # ---- 追加一条 ----
+    def add(self, role: str, text: str, html: bool = False):
+        stamp = time.strftime('%H:%M')
+        body = text if html else _md_block(text)
+        b = ChatBubble(role, body, stamp)
+        b._role = role
+        # 用户消息靠右、智能体靠左，像正常聊天软件
+        wrap = QWidget()
+        wrap.setStyleSheet('background:transparent;')
+        hv = QHBoxLayout(wrap)
+        hv.setContentsMargins(0, 0, 0, 0)
+        hv.setSpacing(0)
+        if role == 'user':
+            hv.addStretch(1)
+            hv.addWidget(b, 0)
+        else:
+            hv.addWidget(b, 0)
+            hv.addStretch(1)
+        b._wrap = wrap
+        self._apply_width(b)
+        self._v.insertWidget(self._v.count() - 1, wrap)
+        self._n += 1
+        QTimer.singleShot(0, self._scroll_end)
+        return b
+
+    def _apply_width(self, b: ChatBubble):
+        avail = max(260, self.viewport().width() - 20)
+        frac = 0.70 if getattr(b, '_role', '') == 'user' else 0.82
+        b.apply_width(avail, frac)
+
+    def _scroll_end(self):
+        bar = self.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        for i in range(self._v.count()):
+            w = self._v.itemAt(i).widget()
+            if w is None:
+                continue
+            b = w.findChild(ChatBubble)
+            if b is not None:
+                self._apply_width(b)
+                b._fit()
+
+    def clear_all(self):
+        while self._v.count() > 1:
+            it = self._v.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+        self._n = 0
 
 
 class _StatusDot(QWidget):
@@ -489,71 +706,149 @@ class AgentPanel(QWidget):
         rv = QVBoxLayout(right)
         rv.setContentsMargins(4, 0, 0, 0)
         rv.setSpacing(6)
-        self.chat_view = QTextBrowser()
-        self.chat_view.setObjectName('result')
-        rv.addWidget(self.chat_view, 3)
+
+        # 顶部：会话标题 + 操作
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        self.lbl_chat_title = QLabel('对话')
+        self.lbl_chat_title.setStyleSheet(
+            'font-size:14px;font-weight:600;color:#111827;')
+        top.addWidget(self.lbl_chat_title)
+        self.lbl_chat_sub = QLabel('')
+        self.lbl_chat_sub.setObjectName('muted')
+        top.addWidget(self.lbl_chat_sub, 1)
+        self.b_log = QPushButton('明细')
+        self.b_log.setCheckable(True)
+        self.b_log.setFixedWidth(56)
+        self.b_log.setToolTip('展开/收起运行日志与产物校验明细')
+        self.b_log.toggled.connect(self._on_toggle_log)
+        top.addWidget(self.b_log)
+        b_new = QPushButton('新对话')
+        b_new.setFixedWidth(70)
+        b_new.setToolTip('清空对话，开始新的一轮（不动项目文件）')
+        b_new.clicked.connect(self._on_new_chat)
+        top.addWidget(b_new)
+        rv.addLayout(top)
+
+        # 对话区（气泡）
+        self.chat_view = ChatView()
+        rv.addWidget(self.chat_view, 1)
+
+        # 明细日志（默认折叠）
         self.detail = QPlainTextEdit()
         self.detail.setObjectName('result')
         self.detail.setReadOnly(True)
         self.detail.setMaximumBlockCount(5000)
         self.detail.setPlaceholderText('运行日志与产物校验明细')
-        rv.addWidget(self.detail, 2)
+        self.detail.setVisible(False)
+        self.detail.setMaximumHeight(180)
+        rv.addWidget(self.detail, 0)
+
+        # 输入框（多行，Ctrl+Enter 或 Enter 发送）
+        box = QFrame()
+        box.setObjectName('composer')
+        box.setStyleSheet(
+            'QFrame#composer{background:#ffffff;border:1px solid #d6dde8;'
+            'border-radius:10px;}')
+        cv2 = QVBoxLayout(box)
+        cv2.setContentsMargins(8, 6, 8, 6)
+        cv2.setSpacing(4)
+        self.edit_q = QPlainTextEdit()
+        self.edit_q.setObjectName('composerEdit')
+        self.edit_q.setPlaceholderText(
+            '⑥ 用组间模式分析 ／ 跑到 LD ／ 还缺什么 ／ 刚才那例重跑　（Enter 发送，Shift+Enter 换行）')
+        self.edit_q.setFixedHeight(46)
+        self.edit_q.setStyleSheet(
+            'QPlainTextEdit#composerEdit{background:transparent;border:none;'
+            'font-family:"Microsoft YaHei UI","Segoe UI",sans-serif;'
+            'font-size:13px;padding:2px;}')
+        self.edit_q.installEventFilter(self)
+        cv2.addWidget(self.edit_q)
         hq = QHBoxLayout()
         hq.setSpacing(6)
-        self.edit_q = QLineEdit()
-        self.edit_q.setPlaceholderText('⑥ 用组间模式分析 ／ 跑到 LD ／ 还缺什么 ／ 刚才那例重跑')
-        self.edit_q.returnPressed.connect(self._on_ask)
-        b_ask = QPushButton('发送')
-        b_ask.clicked.connect(self._on_ask)
-        self.b_ask = b_ask
-        hq.addWidget(self.edit_q, 1)
-        hq.addWidget(b_ask)
-        rv.addLayout(hq)
+        self.lbl_hint = QLabel('')
+        self.lbl_hint.setObjectName('muted')
+        hq.addWidget(self.lbl_hint, 1)
+        self.b_ask = QPushButton('发送')
+        self.b_ask.setObjectName('primary')
+        self.b_ask.setFixedWidth(78)
+        self.b_ask.clicked.connect(self._on_ask)
+        hq.addWidget(self.b_ask)
+        cv2.addLayout(hq)
+        rv.addWidget(box)
+
         split.addWidget(right)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
         split.setChildrenCollapsible(False)
         split.setCollapsible(0, False)
         split.setCollapsible(1, False)
-        root.addWidget(split)
+        root.addWidget(split, 1)
 
         self._on_mode_changed()
-        cfg_llm = config.llm_cfg(self._cfg)
+        self._greet(config.llm_cfg(self._cfg))
+
+    # ------------------------------------------------------------ 开场白
+    def _greet(self, cfg_llm: dict):
         if cfg_llm:
+            self.lbl_chat_title.setText('CEST 智能体')
+            self.lbl_chat_sub.setText(cfg_llm.get('model', ''))
             self._say(
                 f'我是 CEST 智能体（大模型：{cfg_llm.get("model", "")}）。'
                 '**直接跟我说人话就行**：\n\n'
-                '　· 「⑥ 用组间模式重新分析一遍」——我会去看参数表，把 mode 设成组间再跑\n'
-                '　· 「跑到 LD」「只跑后处理」「刚才那例重跑」\n'
-                '　· 「还缺什么」「ctrl 现在到哪一步了」\n\n'
+                '· 「⑥ 用组间模式重新分析一遍」——我会去看参数表，把 mode 设成组间再跑\n'
+                '· 「跑到 LD」「只跑后处理」「刚才那例重跑」\n'
+                '· 「还缺什么」「ctrl 现在到哪一步了」\n\n'
                 '两条红线我不越：**掩模/ROI 必须你手画**（缺了把你送到 ⑧ 页）；'
                 '**频率表**必须你核对过才写进去。')
         else:
+            self.lbl_chat_title.setText('CEST 智能体（本地规则）')
+            self.lbl_chat_sub.setText('未启用大模型')
             self._say(
                 '我是 CEST 智能体。**可以只跑一个模块**，也可以串整条链——'
                 '左边选「只跑一个模块」，就只动那一页，不跑上游。\n\n'
                 '两点先说清楚：\n'
-                '　· **掩模和器官 ROI 必须你手画**——缺了我停下，把你送到 ⑧ 页，不代生成。\n'
-                '　· 手上只有扫描原始数据（S0 + Z 谱）就先跑 ⓪ 导入重建，由它组装成 ① 的输入。\n'
-                '　· **频率表**我先自动检索，检索到了也要你核对过才写进去。\n\n'
+                '· **掩模和器官 ROI 必须你手画**——缺了我停下，把你送到 ⑧ 页，不代生成。\n'
+                '· 手上只有扫描原始数据（S0 + Z 谱）就先跑 ⓪ 导入重建，由它组装成 ① 的输入。\n'
+                '· **频率表**我先自动检索，检索到了也要你核对过才写进去。\n\n'
                 '（当前没启用大模型，只能按关键词识别指令。填了 key 我就能听懂人话了。）')
 
     # -------------------------------------------------------------- 小工具
     def _say(self, text: str, kind: str = 'info'):
-        color = {'info': '#1f2937', 'ok': '#1e8449',
-                 'warn': '#b9770e', 'err': '#c0392b'}.get(kind, '#1f2937')
-        import html as _h
-        import re as _re
-        safe = _h.escape(str(text)).replace('\n', '<br>')
-        safe = _re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', safe)
-        self.chat_view.append(
-            f'<div style="margin:6px 0;color:{color};line-height:1.7;">{safe}</div>')
+        """智能体说话。kind: info/ok/warn/err；info 走正常气泡，其余带色。"""
+        role = {'ok': 'ok', 'warn': 'warn', 'err': 'err'}.get(kind, 'agent')
+        self.chat_view.add(role, str(text))
+        self.lbl_chat_sub.setText(time.strftime('最后更新 %H:%M'))
 
     def _say_user(self, text: str):
-        import html as _h
-        self.chat_view.append(
-            f'<div style="margin:8px 0;padding:6px 10px;background:#eef2f7;'
-            f'border-radius:6px;color:#0f172a;">{_h.escape(str(text))}</div>')
+        self.chat_view.add('user', str(text))
+
+    def _on_toggle_log(self, on: bool):
+        self.detail.setVisible(bool(on))
+
+    def _on_new_chat(self):
+        """清空对话与模型上下文，项目文件一律不动。"""
+        self.chat_view.clear_all()
+        self.detail.clear()
+        self._chat = None
+        self._last_result = None
+        self.lbl_chat_sub.setText('')
+        self.lbl_hint.setText('')
+        cfg_llm = config.llm_cfg(self._cfg)
+        self._greet(cfg_llm)
+
+    def eventFilter(self, obj, e):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+        if obj is self.edit_q and e.type() == QEvent.Type.KeyPress:
+            k = e
+            if isinstance(k, QKeyEvent) and k.key() in (
+                    Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if k.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    return False                     # Shift+Enter 换行
+                self._on_ask()
+                return True
+        return super().eventFilter(obj, e)
 
     def _log(self, s: str):
         self.detail.appendPlainText(str(s))
@@ -682,7 +977,7 @@ class AgentPanel(QWidget):
         self.cmb_case.clear()
         self.cmb_case.addItem('（全部病例）')
         self.cmb_case.blockSignals(False)
-        self.chat_view.clear()
+        self.chat_view.clear_all()
         self.detail.clear()
         self.bar.setValue(0)
         self.lbl_step.setText('就绪')
@@ -842,7 +1137,7 @@ class AgentPanel(QWidget):
                 return
             if not case:
                 case = self._io.get('case') or ''
-            if not case:
+            if not case and mid != 'm7_compare':     # ⑩ 用 A/B 两个病例，不吃单个病例
                 QMessageBox.information(
                     self, '没选病例', '只跑单个模块时，请指定一个病例。')
                 return
@@ -972,8 +1267,9 @@ class AgentPanel(QWidget):
                 self._log(e['traceback'])
         elif t == 'case_done':
             st = e.get('status', '')
-            self._say(f'{e.get("case", "")}：{CASE_CN.get(st, st)}',
-                      'ok' if st == 'ok' else 'warn')
+            # 逐例结果只进明细，不刷屏（36 例会瞬间把对话冲掉）
+            self._log(f'[完成] {e.get("case", "")}：{CASE_CN.get(st, st)}')
+            self.lbl_step.setText(f'{e.get("case", "")} {CASE_CN.get(st, st)}')
 
     def _on_done(self, res):
         self._set_running(False)
@@ -1003,13 +1299,17 @@ class AgentPanel(QWidget):
 
     # --------------------------------------------------------------- 追问
     def _on_ask(self):
-        q = self.edit_q.text().strip()
+        q = self.edit_q.toPlainText().strip()
         if not q:
             return
         cfg_llm = config.llm_cfg(self._cfg)
         if cfg_llm:
             self.edit_q.clear()
             self._say_user(q)
+            # ★ 「把输入/输出改成 X」这种指令不需要模型思考，直接做。
+            #   走模型要绕 3~5 次工具调用（读日志、跑 python、找数据），几十秒才完。
+            if self._try_fast_path(q):
+                return
             self._ask_llm(q, cfg_llm)
             return
         # 没配大模型 → 老路（本地规则）
@@ -1017,17 +1317,110 @@ class AgentPanel(QWidget):
         self._say_user(q)
         self._on_ask_local(q)
 
+    # ---- 快捷指令：改目录 / 查状态，本地直接办，不走模型 ----
+    _RE_SETDIR = None
+
+    def _try_fast_path(self, q: str) -> bool:
+        """命中「改输入/输出目录」这类机械指令就直接执行，返回 True 表示已处理。"""
+        import re as _re
+        import os as _os
+        s = str(q or '').strip()
+        if not s:
+            return False
+        if not _re.search(r'输入|输出|目录|项目|路径|改成|换成|切到|切换到', s):
+            return False
+        # ★ 路径里可能有中文（…\输出结果），不能把中文当分隔符
+        cands = []
+        for m in _re.finditer(r'[A-Za-z]:[\\/][^\s，。；;、？?！!“”"\'）)]*', s):
+            p = m.group(0).replace('/', '\\').rstrip('\\')
+            if p and _os.path.isdir(p) and p not in cands:
+                cands.append(p)
+        if not cands:
+            return False
+
+        # 挑一个 PROJ；没有 PROJ 就取最长那个
+        from . import layout as _ly
+        proj_pick = ''
+        for c in sorted(cands, key=len, reverse=True):
+            try:
+                if _ly.sniff(c).get('kind') == 'proj':
+                    proj_pick = c
+                    break
+            except Exception:                            # noqa: BLE001
+                continue
+        target = proj_pick or max(cands, key=len)
+
+        want_in = bool(_re.search(r'输入', s))
+        want_out = bool(_re.search(r'输出|项目|PROJ', s, _re.I))
+        both = bool(_re.search(r'都|全部|一起', s))
+        if not (want_in or want_out):
+            want_in = want_out = True
+        if both and proj_pick:
+            # 「输入输出都是 <PROJ>」——PROJ 不能当原始输入，只设输出
+            want_in, want_out = False, True
+        elif both:
+            return False                 # 没有 PROJ 可认，交给模型判断更稳
+        if proj_pick:
+            want_out, want_in = True, False
+        elif want_out and not want_in:
+            return False                 # 指定的不是 PROJ，不适合当输出目录
+
+        if want_out:
+            self.ed_proj.setText(target)
+            try:
+                mw = self.main
+                if hasattr(mw, 'out_edit'):
+                    mw.out_edit.setText(target)
+            except Exception:                            # noqa: BLE001
+                pass
+        if want_in:
+            self.ed_in.setText(target)
+        try:
+            self._reload_io(keep_case=False)
+        except Exception:                                # noqa: BLE001
+            pass
+
+        # 同步会话上下文，后续对话直接用新目录
+        if self._chat is not None:
+            self._chat.bind(proj=self._proj(), io=self._io)
+
+        cases = []
+        try:
+            cases = plan.cases_of(self._proj()) if self._proj() else []
+        except Exception:                                # noqa: BLE001
+            pass
+        parts = []
+        if want_out:
+            parts.append(f'输出（PROJ）= `{target}`')
+        if want_in:
+            parts.append(f'输入 = `{target}`')
+        msg = '已改好：\n\n· ' + '\n· '.join(parts)
+        if proj_pick and both:
+            msg += '\n\n（这个路径本身是项目输出目录，不能同时作为原始输入——输入按 PROJ 里的病例自动取）'
+        if cases:
+            msg += f'\n\n识别到 {len(cases)} 例：' + '、'.join(cases[:8])
+        self._say(msg)
+        return True
+
     # ---- 大模型主导：模型自己决定调什么工具、传什么参数 ----
     def _ask_llm(self, q: str, cfg_llm: dict):
         if self._chat is None:
             self._chat = agent.Session(cfg_llm, cfg_all=self._cfg)
         self._chat.cfg = cfg_llm
         self._chat.cfg_all = self._cfg
-        self._chat.bind(proj=self._proj(), io=self._io)
+        # ★ 模型上一轮自己 set_project 过的话，以会话里的 PROJ 为准，
+        #   不要拿界面上的旧目录把它覆盖回去（那会让模型以为没设成功、反复重设）
+        keep = (self._chat.proj or '').strip()
+        proj_now = keep or self._proj()
+        self._chat.bind(proj=proj_now, io=self._io)
 
         self.edit_q.setEnabled(False)
         self.b_ask.setEnabled(False)
+        self.b_ask.setText('…')
+        self.lbl_hint.setText('模型正在思考')
         self.lbl_step.setText('模型正在思考…')
+        self._typing = self.chat_view.add(
+            'agent', '<span style="color:#8b95a3;">正在思考…</span>', html=True)
 
         w = AgentChatWorker(self._chat, q, parent=self)
         w.sig_status.connect(self._on_chat_status)
@@ -1035,9 +1428,54 @@ class AgentPanel(QWidget):
         w.sig_event.connect(self._on_event)
         w.sig_freq.connect(self._on_freq_ask)
         w.sig_code.connect(self._on_code_ask)
+        w.sig_proj.connect(self._on_agent_set_project)
         w.sig_fail.connect(lambda e: self._on_chat_fallback(q, e))
         self._chat_worker = w
         w.start()
+
+    def _on_agent_set_project(self, proj: str, src: dict):
+        """模型改了工作区 → 同步所有界面（信号已在主线程，直接改）。"""
+        self._sync_boxes(proj, dict(src or {}))
+
+    def _sync_boxes(self, proj: str, src: dict):
+        if proj:
+            self.ed_proj.setText(proj)
+            # ★ 关键：主窗口顶部那个「输出总目录(PROJ)」也要跟着改。
+            #   只改智能体面板的框，其它页面还是旧项目，切了等于没切。
+            try:
+                mw = self.main
+                if hasattr(mw, 'out_edit'):
+                    mw.out_edit.setText(proj)
+                elif hasattr(mw, 'proj'):
+                    pass
+            except Exception:                            # noqa: BLE001
+                pass
+        if src.get('dicom_src'):
+            self.ed_in.setText(src['dicom_src'])
+        elif src.get('data_src'):
+            self.ed_in.setText(src['data_src'])
+        elif src.get('mask_src'):
+            self.ed_in.setText(src['mask_src'])
+        try:
+            self._reload_io(keep_case=bool(src.get('case')))
+            if src.get('case'):
+                i = self.cmb_case.findText(src['case'])
+                if i >= 0:
+                    self.cmb_case.setCurrentIndex(i)
+        except Exception:                                # noqa: BLE001
+            pass
+        self._refresh_preview()
+
+    def _drop_typing(self):
+        t = getattr(self, '_typing', None)
+        if t is not None:
+            try:
+                t.parentWidget().setParent(None)
+                t.setParent(None)
+                t.deleteLater()
+            except Exception:                            # noqa: BLE001
+                pass
+            self._typing = None
 
     # ---- 跑代码前确认（信号必须在主线程弹窗）----
     def _on_code_ask(self, code: str):
@@ -1053,16 +1491,22 @@ class AgentPanel(QWidget):
 
     def _on_chat_status(self, s: str):
         if s == 'thinking':
+            self.lbl_hint.setText('模型正在思考')
             self.lbl_step.setText('模型正在思考…')
         elif s == 'tool':
+            self.lbl_hint.setText('模型正在调工具')
             self.lbl_step.setText('模型正在调工具…')
         elif s:
             self._log(f'[模型] {s}')
+            self.lbl_hint.setText(str(s)[:60])
             self.lbl_step.setText(str(s)[:130])
 
     def _on_chat_answer(self, text: str):
+        self._drop_typing()
         self.edit_q.setEnabled(True)
         self.b_ask.setEnabled(True)
+        self.b_ask.setText('发送')
+        self.lbl_hint.setText('')
         self.edit_q.setFocus()
         self.lbl_step.setText('')
         self._say(text, 'info')
@@ -1074,8 +1518,11 @@ class AgentPanel(QWidget):
 
     def _on_chat_fallback(self, q: str, err: str):
         """接口挂了 / 没 key / 网络断 → 退回本地规则，别让界面变成死的。"""
+        self._drop_typing()
         self.edit_q.setEnabled(True)
         self.b_ask.setEnabled(True)
+        self.b_ask.setText('发送')
+        self.lbl_hint.setText('')
         self.lbl_step.setText('')
         self._say(f'大模型调用失败（{err}），已退回本地规则。', 'warn')
         self._on_ask_local(q)
@@ -1181,7 +1628,8 @@ class AgentPanel(QWidget):
 
 # 单模块模式下，意图里的阶段 → 模块 id
 _ALIAS_MOD = {'m_import': 'm_import', 'm1_recon': 'm1_recon', 'm3_post': 'm3_post',
-              'm4_ld': 'm4_ld', 'm2_display': 'm2_display'}
+              'm4_ld': 'm4_ld', 'm2_display': 'm2_display',
+              'm7_compare': 'm7_compare'}
 
 
 class _TestThread(QThread):

@@ -13,6 +13,7 @@ from .m3_post import PostModule
 from .m4_ld import LDModule
 from .m5_prf import PrfExtractModule
 from .m6_prf_analysis import PrfAnalysisModule
+from .m7_compare import CompareModule
 from .m_import import ImportModule
 from .m_roi import ROIModule
 
@@ -28,6 +29,7 @@ ALL = (
     PrfExtractModule(),
     PrfAnalysisModule(),
     DisplayModule(),
+    CompareModule(),
     CheckModule(),
 )
 

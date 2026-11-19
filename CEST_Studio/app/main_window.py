@@ -29,7 +29,7 @@ from jobs.ctx import JobContext
 
 # 智能体能单独跑的模块（⑧ 要手画掩模，不作为可执行模块带进去）
 _AGENT_MODULES = ('m_import', 'm1_recon', 'm3_post', 'm4_ld', 'm5_prf',
-                  'm6_prf_analysis', 'm2_display', 'm0_check')
+                  'm6_prf_analysis', 'm2_display', 'm7_compare', 'm0_check')
 
 
 class MainWindow(QMainWindow):
