@@ -48,8 +48,20 @@ _CODE_EXT = ('.py', '.pyc', '.pyo', '.pyi', '.pyd', '.so', '.dll')
 
 
 def cfg_of(llm_or_root: dict) -> dict:
-    """从 config 里取权限配置（容忍旧配置没有这一段）。"""
-    g = (llm_or_root or {}).get('grants')
+    """从 config 里取权限配置（容忍旧配置没有这一段）。
+
+    两种调用形态都要认：
+        {'grants': {...}}                  ← 设置对话框里直接给一段
+        {'llm': {'grants': {...}}, ...}    ← 整份 config.json（Session.cfg_all）
+    原先只认第一种，导致 agent 侧永远读到 DEFAULTS（= 仅项目目录），
+    用户在界面上调到「全盘」也不生效。
+    """
+    src = llm_or_root or {}
+    g = src.get('grants')
+    if not isinstance(g, dict):
+        llm = src.get('llm')
+        if isinstance(llm, dict):
+            g = llm.get('grants')
     d = dict(DEFAULTS)
     if isinstance(g, dict):
         for k, v in g.items():

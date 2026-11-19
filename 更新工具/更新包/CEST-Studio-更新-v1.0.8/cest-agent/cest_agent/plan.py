@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from detect import chain
 from detect import rules as R
 
@@ -36,6 +38,17 @@ CHAIN_STAGES = ('m1_recon', 'm_roi', 'm3_post', 'm4_ld', 'm2_display')
 
 def cases_of(proj) -> list:
     return chain.list_cases(proj) if proj else []
+
+
+def io_in(io, mid, key='inp') -> str:
+    """从 io（layout.targets / resolve_io 的结果）取某阶段的输入目录。"""
+    try:
+        d = io or {}
+        if 'stages' in d:
+            d = d.get('stages') or {}
+        return str((d.get(mid) or {}).get(key) or '').strip()
+    except Exception:                                    # noqa: BLE001
+        return ''
 
 
 def mask_and_roi(proj, case) -> tuple:
@@ -76,8 +89,15 @@ def _blk_problem(ids, case):
                 goto=dict(mid=ids[0], case=case))
 
 
-def roi_stage(proj, case) -> dict:
-    """⑧ 的状态。注意：⑧ 是**人工阶段**，agent 只检查，永远不代跑。
+def roi_stage(proj, case, io=None) -> dict:
+    """⑧ 的状态。
+
+    ★ 两条来源，语义不同，别混：
+      · **手画**（GUI ⑧ 页）：agent 永远不代画、不代生成；
+      · **提取/收编**（⓪ 掩模模式）：把已有的掩膜 .mat 转成
+        00_掩模\\<病例>\\Mask.mat，agent 可以跑 —— 只要给了掩模源目录。
+        ★ 掩模提取**不需要** ① 重建先跑好（源 .mat 自带掩膜），别在这拦。
+    没给源目录、盘上也没有 → 才报「必须手画」，交给人。
 
     状态以「去噪掩膜 Mask.mat」为准（与 GUI 的数据链自检一致）；
     缺 ROI_total 单独作为 ③ 的前置问题列出，不影响 ④（④ 只要掩模）。
@@ -87,27 +107,33 @@ def roi_stage(proj, case) -> dict:
                     problems=[dict(kind='no_proj', fix_kind='human_gui',
                                    text='还没选输出总目录（PROJ）',
                                    goto=dict(mid='m_roi', case=case or ''))])
-    recon = chain.recon_dir(proj, case)
-    if not chain.has_recon(recon):
-        return dict(id='m_roi', label=STAGE_LABEL['m_roi'], status='blocked',
-                    problems=[dict(kind='blocked', fix_kind='blocked',
-                                   text='等 ① 重建出数据后才能画掩模',
-                                   goto=dict(mid='m1_recon', case=case or ''))])
     has_mask, has_roi = mask_and_roi(proj, case)
-    probs = []
-    if not has_mask:
-        probs.append(dict(
-            kind='mask_missing', fix_kind='human_gui',
-            text=f'缺 00_掩模\\{case}\\Mask.mat（去噪掩膜）—— 必须手画，我不代生成',
-            goto=dict(mid='m_roi', case=case)))
+    if has_mask:
+        probs = []
+        if not has_roi:
+            probs.append(dict(
+                kind='roi_missing', fix_kind='human_gui',
+                text=f'缺 00_掩模\\{case}\\ROI_total.mat（器官 ROI）—— ③ 后处理要它，需手画',
+                goto=dict(mid='m_roi', case=case)))
+        return dict(id='m_roi', label=STAGE_LABEL['m_roi'], status='done',
+                    has_mask=True, has_roi=has_roi, problems=probs)
+    # ---- 还没掩膜：有掩模源目录 → ⓪ 掩模模式能提取；否则交人 ----
+    src = io_in(io, 'm_roi')
+    if src and Path(src).is_dir():
+        return dict(id='m_roi', label=STAGE_LABEL['m_roi'], status='todo',
+                    has_mask=False, has_roi=has_roi, src=src, problems=[])
+    probs = [dict(
+        kind='mask_missing', fix_kind='human_gui',
+        text=f'缺 00_掩模\\{case}\\Mask.mat（去噪掩膜）—— '
+             f'要么在 ⓪ 用掩模模式从已有 .mat 提取（需指定掩模源目录），要么手画',
+        goto=dict(mid='m_roi', case=case))]
     if not has_roi:
         probs.append(dict(
             kind='roi_missing', fix_kind='human_gui',
             text=f'缺 00_掩模\\{case}\\ROI_total.mat（器官 ROI）—— ③ 后处理要它，需手画',
             goto=dict(mid='m_roi', case=case)))
     return dict(id='m_roi', label=STAGE_LABEL['m_roi'],
-                status='done' if has_mask else 'todo',
-                has_mask=has_mask, has_roi=has_roi, problems=probs)
+                status='blocked', has_mask=False, has_roi=has_roi, problems=probs)
 
 
 def import_stage(proj, case, io=None) -> dict:
@@ -164,10 +190,10 @@ def check_case(proj, case, stages=None, force=False, io=None) -> dict:
                      f'—— 需要原始 DICOM 或先导入',
                 goto=dict(mid='m1_recon', case=case))])
 
-    # ⑧ 掩模 / ROI（人工阶段）
+    # ⑧ 掩模 / ROI：有掩模源目录时可由 ⓪ 掩模模式提取，否则必须人工画
     roi = None
     if 'm_roi' in stages:
-        roi = roi_stage(proj, case)
+        roi = roi_stage(proj, case, io=io)
         smap['m_roi'] = roi
 
     # 下游（③④②）到底有没有 01_重建 可用：
@@ -248,8 +274,9 @@ def check_case(proj, case, stages=None, force=False, io=None) -> dict:
         if item is None:
             continue
         out['stages'].append(item)
-        # ⑧ 是人工阶段：它的 todo 不是「agent 能跑」，绝不能算进 can_run
-        if item['status'] == 'todo' and s != 'm_roi':
+        # ⑧ 的 todo 只有在「给出掩模源目录」时才算 agent 能跑（走 ⓪ 掩模模式）；
+        # 没源目录的 ⑧ 仍是人工阶段，绝不能算进 can_run。
+        if item['status'] == 'todo' and (s != 'm_roi' or item.get('src')):
             out['can_run'].append(s)
         elif item['status'] == 'blocked':
             out['blocked'].append(s)

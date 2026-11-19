@@ -75,6 +75,89 @@ def _mk_ctx(proj, det, emit, cancel_flag):
     return ctx2
 
 
+_SCAN_CACHE = {}
+
+
+def _scan_data_cached(src, allow=()):
+    """扫数据目录（按目录缓存）。整链 36 个病例别重复读同一个目录的文件头。"""
+    key = (str(src), tuple(allow))
+    if key in _SCAN_CACHE:
+        return _SCAN_CACHE[key]
+    from app.modules import scan_helper as S
+    try:
+        rows = S.scan_data(str(src), allow_z=tuple(allow))
+    except Exception:                                    # noqa: BLE001
+        rows = []
+    _SCAN_CACHE[key] = rows
+    return rows
+
+
+def _prepare_import_plan(m, src, case, p_z=None):
+    """给 ⓪ 数据模式塞一份「只含这个病例」的扫描清单。
+
+    ★ 为什么必须给：用户选的是**总文件夹**（里面 ctrl/1W/小鼠1 这种层级），
+      ⓪ 的自动定位只在 src 根目录找 S0/Z，找不到就报「没找到 Z 谱」。
+      扫描清单里每行已经带好了 s0 / z / w_spec，等价于用户手点【扫描目录…】再勾选。
+    """
+    try:
+        m._plan = None          # 先清掉上次残留的勾选（可能是掩模模式那批）
+        m._plan_mode = ''
+    except Exception:                                    # noqa: BLE001
+        pass
+    # 源目录里如果只有 V_exp / V_as 这类后处理产物当 Z 谱（用户明确只用它），放行
+    allow = tuple(str(x) for x in (p_z or ()))
+    rows = _scan_data_cached(src, allow)
+    if not rows:
+        return False
+    hit = [r for r in rows if str(r.get('case') or '') == str(case)]
+    if not hit:
+        return False
+    try:
+        m._plan = hit
+        m._plan_mode = 'data'
+    except Exception:                                    # noqa: BLE001
+        return False
+    return True
+
+
+def _run_mask_stage(proj, mask_src, io, ev, cancel, case='', batch=False):
+    """用 ⓪ 的「掩模 / ROI 提取」模式收编掩膜 → 00_掩模\\<病例>\\。
+
+    ★ ⑧ 本身不是可执行模块；掩模提取一直是 ⓪ 的第二种模式。
+      这里只是替智能体把 ⓪ 用 mode=掩模 调起来，不另写一套逻辑。
+    batch=True  → 一次扫全量（整链跑多病例时只扫一遍，别的病例随后直接判 done）
+    batch=False → 只提取当前病例（单病例跑，不碰别人的掩模）
+    """
+    from app.modules.m_import import MODE_MASK
+    m = _module('m_import')
+    if m is None:
+        raise RuntimeError('找不到模块 m_import')
+    organ = ''          # 留空 → 按扫描到的变量名自动认（brainMask → brain）
+    p = dict(mode=MODE_MASK, src=str(mask_src), out_root=str(proj),
+             organ=organ, case='', z_file='', w_offset='')
+    if batch:
+        try:
+            m._plan = None      # 清空 → 模块自己按输入目录扫全量
+            m._plan_mode = ''
+        except Exception:                                    # noqa: BLE001
+            pass
+    else:
+        # 摆好「只含这一个病例」的清单，等价于手点【扫描掩模目录…】再勾一行
+        from app.modules import scan_helper as S
+        try:
+            rows = S.scan_masks(str(mask_src), organ or 'liver')
+        except Exception:                                    # noqa: BLE001
+            rows = []
+        hit = [r for r in rows if str(r.get('case') or '') == str(case)]
+        try:
+            m._plan = hit or None
+            m._plan_mode = 'mask' if hit else ''
+        except Exception:                                    # noqa: BLE001
+            pass
+    ctx = _mk_ctx(proj, _det(str(mask_src)), ev, cancel)
+    return m.run(p, ctx)
+
+
 def params_for(mid, proj, case, overrides=None, io=None) -> dict:
     """用模块自己的 suggest() 生成默认参数，再补病例 / 目录相关字段。
 
@@ -136,11 +219,15 @@ def params_for(mid, proj, case, overrides=None, io=None) -> dict:
         if org:
             p['organ'] = org
     # ---- 掩模（③④② 都要）----
+    # ★ 一定要按**当前病例**重新取：io['stages'][*]['mask'] 是 resolve_io 那一刻
+    #   算出来的固定路径，整链多病例时会一直指着第一个病例的掩模。
     if mid in ('m3_post', 'm4_ld', 'm2_display') and 'mask_file' in keys:
-        mf = t.get('mask') or ''
-        if not mf or not Path(mf).exists():
-            mf2 = chain.mask_file(proj, case)
-            mf = str(mf2) if mf2 else mf
+        mf2 = chain.mask_file(proj, case)
+        mf = str(mf2) if mf2 else ''
+        if not mf:
+            mf = t.get('mask') or ''
+            if mf and not Path(mf).exists():
+                mf = ''
         if mf:
             p['mask_file'] = mf
     if mid == 'm3_post':
@@ -201,6 +288,9 @@ def run_chain(proj, cases, stages=('m1_recon', 'm_roi', 'm3_post', 'm4_ld'),
     results = []
     failures = []
     pending_human = []
+    # ⑧ 的掩模源目录：整链有多个病例时首次一次性提取全量，之后逐例只判 done
+    _mask_batch = len(list(cases)) > 1
+    _mask_bulk_done = False
 
     for ci, case in enumerate(cases, 1):
         if cancel():
@@ -218,7 +308,7 @@ def run_chain(proj, cases, stages=('m1_recon', 'm_roi', 'm3_post', 'm4_ld'),
         if gate_stages and not _makes_recon and not chain.has_recon(
                 chain.recon_dir(proj, case)):
             needs_roi = ('m3_post' in stages)
-            gate = plan.check_case(proj, case, ('m_roi',))
+            gate = plan.check_case(proj, case, ('m_roi',), io=io)
             blocking = [p for p in (gate.get('needs_human') or [])
                         if p.get('kind') != 'roi_missing' or needs_roi]
             if blocking:
@@ -245,12 +335,16 @@ def run_chain(proj, cases, stages=('m1_recon', 'm_roi', 'm3_post', 'm4_ld'),
         for sid in stages:
             if cancel():
                 break
-            # ---- ⑧ 不能被 agent 跑：它只做检查，缺了就交人 ----
+            # ---- ⑧：交给 ⓪ 的掩模模式提取，agent 不代画 ----
             if sid == 'm_roi':
-                st = roi_stage(proj, case)
-                cres['stages'].append(dict(id=sid, status=st['status'],
-                                           problems=st['problems']))
-                if st['status'] != 'done':
+                st = roi_stage(proj, case, io=io)
+                if st['status'] == 'done':
+                    cres['stages'].append(dict(id=sid, status='done'))
+                    ev(dict(type='log', text=f'  {STAGE_LABEL[sid]} 已完成，跳过'))
+                    continue
+                if st['status'] != 'todo' or not st.get('src'):
+                    cres['stages'].append(dict(id=sid, status='blocked',
+                                               problems=st['problems']))
                     for p in st['problems']:
                         pending_human.append(dict(case=case, stage=sid, **p))
                         ev(dict(type='need_human', case=case, stage=sid,
@@ -259,6 +353,54 @@ def run_chain(proj, cases, stages=('m1_recon', 'm_roi', 'm3_post', 'm4_ld'),
                     cres['status'] = 'blocked'
                     ev(dict(type='log',
                             text=f'■ {STAGE_LABEL[sid]} 未完成，本病例后续跳过：{case}'))
+                    break
+                # 有掩模源目录 → 用 ⓪ 的「掩模 / ROI 提取」模式收编
+                ev(dict(type='stage', case=case, stage=sid,
+                        label=STAGE_LABEL[sid]))
+                t0 = time.time()
+                try:
+                    bulk = _mask_batch and not _mask_bulk_done
+                    if bulk:
+                        ev(dict(type='log',
+                                text=f'  ⑧ 从 {st["src"]} 一次性提取全部掩模…'))
+                    res = _run_mask_stage(proj, st['src'], io, ev, cancel, case,
+                                          batch=bulk)
+                    if bulk:
+                        _mask_bulk_done = True
+                    v = verify.run(sid, proj, case, res)
+                    ev(dict(type='verify', case=case, stage=sid, result=v))
+                    if v.get('ok'):
+                        cres['stages'].append(dict(id=sid, status='done',
+                                                   sec=round(time.time() - t0, 1)))
+                        ev(dict(type='log',
+                                text=f'✔ {STAGE_LABEL[sid]} 完成（{time.time() - t0:.0f}s）'))
+                    else:
+                        cres['stages'].append(dict(id=sid, status='partial',
+                                                   verify=v))
+                        cres['status'] = 'partial'
+                        failures.append(dict(case=case, stage=sid,
+                                             error=v.get('reason', ''), verify=v))
+                        ev(dict(type='fail', case=case, stage=sid,
+                                text=v.get('reason', ''), partial=True))
+                        ev(dict(type='log',
+                                text=f'⚠ {STAGE_LABEL[sid]} 跑完但产物不全：'
+                                     f'{v.get("reason")}'))
+                except Cancelled:
+                    ev(dict(type='log', text='■ 已取消'))
+                    cres['stages'].append(dict(id=sid, status='cancelled'))
+                    cres['status'] = 'cancelled'
+                    break
+                except Exception as e:                       # noqa: BLE001
+                    tb = traceback.format_exc()
+                    err = f'{type(e).__name__}: {e}'
+                    d = doctor.diagnose(err + '\n' + tb, sid)
+                    failures.append(dict(case=case, stage=sid, error=err,
+                                         traceback=tb))
+                    cres['stages'].append(dict(id=sid, status='fail', error=err))
+                    cres['status'] = 'fail'
+                    ev(dict(type='fail', case=case, stage=sid, text=err, diag=d,
+                            traceback=tb))
+                    ev(dict(type='log', text=f'× {STAGE_LABEL[sid]} 失败：{err}'))
                     break
                 continue
 
@@ -313,6 +455,8 @@ def run_chain(proj, cases, stages=('m1_recon', 'm_roi', 'm3_post', 'm4_ld'),
                 cres['status'] = 'fail'
                 break
             p = params_for(sid, proj, case, overrides, io=io)
+            if sid == 'm_import' and p.get('src'):
+                _prepare_import_plan(m, p['src'], case)
             # ctx.det 必须是该模块自己的输入识别结果（① 靠它区分 UIH/Philips）
             ctx = _mk_ctx(proj, _det(p['src']) if p.get('src') else _det(proj),
                           ev, cancel)
@@ -402,6 +546,8 @@ def run_module(mid, proj, case, overrides=None, on_event=None,
 
     try:
         p = params_for(mid, proj, case, overrides, io=io)
+        if mid == 'm_import' and p.get('src'):
+            _prepare_import_plan(m, p['src'], case)
         ev(dict(type='log', text=f'　参数：' + '，'.join(
             f'{k}={v}' for k, v in p.items()
             if k in ('src', 'out_root', 'out_dir', 'mask_file', 'case', 'scope')

@@ -167,6 +167,25 @@ def sniff(path) -> dict:
     return r
 
 
+def _data_cases(root) -> list:
+    """普通数据/掩模文件夹里的病例名：含 .mat 的目录 → 相对路径用 _ 连起来。
+
+    ★ 与 GUI 的 scan_helper.case_name_for 同一口径，不另发明命名。
+    """
+    from app.modules.scan_helper import case_name_for
+    r = Path(root)
+    seen, out = set(), []
+    try:
+        for f in sorted(r.rglob('*.mat')):
+            c = case_name_for(f.parent, r)
+            if c and c not in seen:
+                seen.add(c)
+                out.append(c)
+    except OSError:
+        pass
+    return out
+
+
 def _dicom_kids(d: Path):
     """d 下面哪些子目录各自能被认成 DICOM（= 多病例上级目录）。"""
     from detect.scanner import detect
@@ -242,17 +261,42 @@ def resolve_io(src_path, proj_hint='', case='') -> dict:
             out['stages'] = targets(proj, out['case'])
         return out
 
+    # 4) 普通数据 / 掩模文件夹（既不是 DICOM，也没有重建结果）：
+    #    递归有 .mat 就当成 ⓪ 的输入 —— 数据组装和掩模提取都从它读。
+    try:
+        has_mat = any(Path(s['path']).rglob('*.mat'))
+    except OSError:
+        has_mat = False
+    if has_mat:
+        out['kind'] = 'data'
+        if not proj:
+            out['problems'].append(dict(
+                kind='manual_arg',
+                text='这是数据/掩模文件夹，还要指定「输出总目录(PROJ)」——'
+                     '⓪ 会把 S0/Z 谱组装到 01_重建、把掩模收编到 00_掩模。',
+                fix_kind='manual_arg'))
+            return out
+        cases = _data_cases(s['path'])
+        out['ok'] = True
+        out['cases'] = cases
+        case = case or (cases[0] if cases else '')
+        out['case'] = case
+        out['note'] = f'数据/掩模文件夹（{len(cases)} 个病例）'
+        out['stages'] = targets(proj, case, data_src=s['path'], mask_src=s['path'])
+        return out
+
     out['problems'].append(dict(kind='manual_arg',
                                 text=s.get('note') or '认不出这个目录',
                                 fix_kind='manual_arg'))
     return out
 
 
-def targets(proj, case, dicom_src='', data_src='') -> dict:
+def targets(proj, case, dicom_src='', data_src='', mask_src='') -> dict:
     """各阶段的输入/输出绝对路径（PROJ 的固定布局，直接用 GUI 的 cn_name）。
 
     dicom_src = ① 的输入（原始 DICOM 目录）
-    data_src  = ⓪ 的输入（已有 s0 / Z 谱的目录或 .mat）
+    data_src  = ⓪ 数据模式的输入（已有 s0 / Z 谱的目录或 .mat）
+    mask_src  = ⓪ 掩模模式的输入（已有掩膜 / ROI 的目录）；⑧ 靠它决定能否提取
     """
     proj = str(proj or '').strip()
     case = str(case or '').strip()
@@ -271,10 +315,12 @@ def targets(proj, case, dicom_src='', data_src='') -> dict:
         return str(mf) if mf else str(roi / 'Mask.mat')
 
     return {
-        'm_import': dict(inp=data_src or '', out=str(p), organ=org),
+        'm_import': dict(inp=data_src or '', out=str(p), organ=org,
+                         mask_inp=mask_src or ''),
         'm1_recon': dict(inp=dicom_src or '', out=str(rd), organ=org),
-        'm_roi': dict(inp=str(rd), out=str(roi), mask=_mask(),
-                      roi_total=str(roi / 'ROI_total.mat'), organ=org),
+        'm_roi': dict(inp=mask_src or '', out=str(roi), mask=_mask(),
+                      roi_total=str(roi / 'ROI_total.mat'), organ=org,
+                      recon=str(rd)),
         'm3_post': dict(inp=str(rd), out=str(post), mask=_mask(), organ=org),
         'm4_ld': dict(inp=str(rd), out=str(ld), mask=_mask(), organ=org),
         'm5_prf': dict(inp=proj, out=str(p / R.cn_name('05_prf_extract'))),

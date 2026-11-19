@@ -487,6 +487,7 @@ class ImportModule(Module):
             ctx.progress(i - 1, len(plan), f'⓪ {case}（{i}/{len(plan)}）')
             try:
                 r = self._import_one(p, ctx, s0f=row.get('s0'), zf=row.get('z'),
+                                     zvar=row.get('z_var'),
                                      w_spec=row.get('w_spec'), case=case,
                                      root=root, wf=row.get('w'), quiet=True)
                 res.append(r)
@@ -499,7 +500,7 @@ class ImportModule(Module):
 
     # ---------------------------------------------------------------- 数据：单例
     def _import_one(self, p, ctx, *, s0f=None, zf=None, wf=None, b0f=None,
-                    w_spec=None, case=None, root=None, quiet=False):
+                    zvar=None, w_spec=None, case=None, root=None, quiet=False):
         from cest_io import load_first
 
         stamp = time.strftime('%Y%m%d_%H%M%S')
@@ -539,7 +540,16 @@ class ImportModule(Module):
 
         # ---------------- 读 ----------------
         s0 = np.asarray(load_first(s0f, S0_VARS), float)
-        z = np.asarray(load_first(zf, Z_VARS), float)
+        # ★ 扫描清单已认出 Z 谱是哪个变量（可能是 V_exp 这类后处理产物），先按它读
+        z = None
+        if zvar:
+            zv = load_first(zf, [str(zvar)])
+            if zv is not None:
+                z = np.asarray(zv, float)
+                if z.size:
+                    ctx.log(f'   Z 谱变量：{zvar}（来自扫描清单）')
+        if z is None or not z.size:
+            z = np.asarray(load_first(zf, Z_VARS), float)
         b0 = None
         if b0f is not None:
             b0v = load_first(b0f, B0_VARS)
