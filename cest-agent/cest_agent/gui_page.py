@@ -723,6 +723,11 @@ class AgentPanel(QWidget):
         self.b_log.setToolTip('展开/收起运行日志与产物校验明细')
         self.b_log.toggled.connect(self._on_toggle_log)
         top.addWidget(self.b_log)
+        b_exp = QPushButton('导出')
+        b_exp.setFixedWidth(56)
+        b_exp.setToolTip('把这段对话导出成 Markdown 文件（记录同时自动存在 _state\\chat 里）')
+        b_exp.clicked.connect(self._on_export_chat)
+        top.addWidget(b_exp)
         b_new = QPushButton('新对话')
         b_new.setFixedWidth(70)
         b_new.setToolTip('清空对话，开始新的一轮（不动项目文件）')
@@ -819,9 +824,54 @@ class AgentPanel(QWidget):
         role = {'ok': 'ok', 'warn': 'warn', 'err': 'err'}.get(kind, 'agent')
         self.chat_view.add(role, str(text))
         self.lbl_chat_sub.setText(time.strftime('最后更新 %H:%M'))
+        self._log_chat('CEST 智能体', text)
 
     def _say_user(self, text: str):
         self.chat_view.add('user', str(text))
+        self._log_chat('你', text)
+
+    # ---- 对话记录：自动落盘 + 手动导出 ----
+    def _chat_log_file(self) -> Path:
+        """当天的对话记录文件（_state\\chat\\YYYY-MM-DD.md，逐条追加）。"""
+        from . import paths
+        d = paths.agent_state_dir() / 'chat'
+        d.mkdir(parents=True, exist_ok=True)
+        return d / (time.strftime('%Y-%m-%d') + '.md')
+
+    def _log_chat(self, who: str, text: str):
+        try:
+            p = self._chat_log_file()
+            head = (not p.exists()) or p.stat().st_size == 0
+            with p.open('a', encoding='utf-8') as f:
+                if head:
+                    f.write(f'# CEST 智能体对话 · {time.strftime("%Y-%m-%d")}\n\n')
+                f.write(f'## {time.strftime("%H:%M")} {who}\n\n'
+                        f'{str(text).strip()}\n\n')
+        except Exception:                                # noqa: BLE001
+            pass
+
+    def _on_export_chat(self):
+        """把当天对话记录导出成 md/txt。"""
+        p = self._chat_log_file()
+        body = p.read_text(encoding='utf-8') if p.exists() else ''
+        if not body.strip():
+            QMessageBox.information(self, '没有内容',
+                                    '这段对话还没有可导出的内容。')
+            return
+        desk = Path.home() / 'Desktop'
+        default = str((desk if desk.is_dir() else Path.home())
+                      / f'CEST对话_{time.strftime("%Y-%m-%d")}.md')
+        fn, _flt = QFileDialog.getSaveFileName(
+            self, '导出对话', default, 'Markdown (*.md);;文本文件 (*.txt)')
+        if not fn:
+            return
+        try:
+            Path(fn).write_text(body, encoding='utf-8')
+        except Exception as e:                           # noqa: BLE001
+            QMessageBox.warning(self, '导出失败', f'{type(e).__name__}: {e}')
+            return
+        self.detail.appendPlainText(f'[导出] 对话已保存：{fn}')
+        QMessageBox.information(self, '已导出', f'对话已保存到：\n{fn}')
 
     def _on_toggle_log(self, on: bool):
         self.detail.setVisible(bool(on))
@@ -835,6 +885,11 @@ class AgentPanel(QWidget):
         self.lbl_chat_sub.setText('')
         self.lbl_hint.setText('')
         cfg_llm = config.llm_cfg(self._cfg)
+        try:
+            with self._chat_log_file().open('a', encoding='utf-8') as f:
+                f.write(f'\n---\n\n## 新对话 {time.strftime("%H:%M")}\n\n')
+        except Exception:                                # noqa: BLE001
+            pass
         self._greet(cfg_llm)
 
     def eventFilter(self, obj, e):

@@ -517,9 +517,6 @@ class ImportModule(Module):
                                f'（病例名 = {case!r}）')
         if case != str(raw_case).strip() and not quiet:
             ctx.log(f'   病例名已修正：{raw_case!r} → {case!r}')
-        out.mkdir(parents=True, exist_ok=True)
-        ctx.log(f'   输出目录：{out}')
-
         many = None
         if s0f is None and zf is None:
             got = self._locate(src, p)
@@ -613,6 +610,10 @@ class ImportModule(Module):
         ctx.log(f'   w {nw} 点 {w.min():.2f}..{w.max():.2f}（{wsrc}）')
 
         # ---------------- 写 ----------------
+        # ★ 目录只为「真的读到了 S0 + Z 谱」的病例创建：
+        #   前面任何一步失败（找不到 Z 谱 / S0 / 频偏没确认）都不会留下空目录。
+        out.mkdir(parents=True, exist_ok=True)
+        ctx.log(f'   输出目录：{out}')
         from cest_io import save_mat
         BIG = 2_000_000_000
         for fn in ('s0.mat', 'normZ.mat', 'ssat.mat', 'w_offset.mat', 'b0.mat'):
@@ -672,7 +673,7 @@ class ImportModule(Module):
             ctx.log(f'⓪ 未扫描 → 自动识别到 {len(plan)} 个病例')
 
         base = root / R.cn_name('00_roi')
-        base.mkdir(parents=True, exist_ok=True)
+        # ★ 不预建 00_掩模：等某个病例真的读到 Mask 时，由 _extract_one 按需创建。
         organ_cli = str(p.get('organ') or '').strip()
         stamp = time.strftime('%Y%m%d_%H%M%S')
         done, skipped = [], []
@@ -698,7 +699,6 @@ class ImportModule(Module):
     def _extract_one(self, ctx, row, case, base, organ_cli, stamp):
         from cest_io import load_mat
         out = (base / case)
-        out.mkdir(parents=True, exist_ok=True)
         src_dir = Path(row.get('dir') or '')
 
         # 层数：同目录有 S0 就按它的层数（2D S0 → 1 层）
@@ -745,6 +745,8 @@ class ImportModule(Module):
         mask3 = _as_layer3d(arr, n_layer)
         if n_layer == 1 and np.asarray(mask3).ndim == 3 and mask3.shape[2] == 1:
             pass
+        # ★ 到这里才算真的提取到了掩模，这时才建 <病例> 目录（连同 00_掩模 一起按需建）
+        out.mkdir(parents=True, exist_ok=True)
         _backup(out / 'Mask.mat', stamp, ctx.log)
         from cest_io import save_mat
         save_mat(out / 'Mask.mat', {'Mask': mask3, 'axis_order': 'layer_freq'})

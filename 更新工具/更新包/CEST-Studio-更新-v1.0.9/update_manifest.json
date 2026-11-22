@@ -1,17 +1,17 @@
 {
   "product": "CEST-Studio",
-  "version": "1.0.8",
-  "base_version": "1.0.8",
-  "generated": "2026-11-19 12:17:36",
-  "note": "修复：权限档位读不到（一直按最保守档运行），现已生效",
+  "version": "1.0.9",
+  "base_version": "1.0.9",
+  "generated": "2026-11-19 15:22:40",
+  "note": "新增 ⑩ 图像对比模块；智能体接入 GUI 全部模块（含 ⑩）；智能体对话界面改版（气泡聊天/Markdown渲染/明细折叠）；修复模型改目录后界面不同步、权限档位读不到、run_python 闪黑框",
   "needs_runtime_refresh": false,
-  "file_count": 97,
-  "total_bytes": 1310977,
+  "file_count": 98,
+  "total_bytes": 1361696,
   "files": [
     {
       "path": "更新说明.txt",
-      "size": 466,
-      "sha256": "ce0a2977c96d41e014c1ff7ecf9d8d477c3d9d2622297f3ddd1f60401de7eb56"
+      "size": 630,
+      "sha256": "64f31c774d7de3686c46df668ab745d1b13b63ee2d0d5812b1cb5aa59d87fa2f"
     },
     {
       "path": "启动 CEST Studio.vbs",
@@ -105,13 +105,13 @@
     },
     {
       "path": "CEST_Studio/app/main_window.py",
-      "size": 19968,
-      "sha256": "6effc46ce06465acd3158c09a0f90fb1bdbda36e00d19435b040bd0aa7da4b86"
+      "size": 19982,
+      "sha256": "ab0009d95967dd673a8e676407154bb474b7758352a2b98ee71991ce03d0c23d"
     },
     {
       "path": "CEST_Studio/app/modules/base.py",
-      "size": 4948,
-      "sha256": "723bca9ed45b4746916d373d4103148295fdf16a57fa3641ee3fae31d6d9e2a3"
+      "size": 5258,
+      "sha256": "03220425b666f308bc5a944e25fed8e9a9c95d99442d678166a0a0d9cb303700"
     },
     {
       "path": "CEST_Studio/app/modules/m0_check.py",
@@ -149,6 +149,11 @@
       "sha256": "cf6f5c41d0b56f42ce00578b630925837a0bb2c7dab94b8c214fb00cc2e77ffe"
     },
     {
+      "path": "CEST_Studio/app/modules/m7_compare.py",
+      "size": 23336,
+      "sha256": "956e56a7bbde9008786d2e57caa73580ace9fba36ad66264176b51a0004b1b83"
+    },
+    {
       "path": "CEST_Studio/app/modules/m_import.py",
       "size": 40667,
       "sha256": "bbb2300a2c9d01d7ffd4d19886571672c097de3b85a78dc621506ab45c69b5d0"
@@ -160,8 +165,8 @@
     },
     {
       "path": "CEST_Studio/app/modules/registry.py",
-      "size": 1663,
-      "sha256": "671ee666a5898ff8f939a928d8277b3ce7d3304a2c94d0d0add7c55333c339f9"
+      "size": 1772,
+      "sha256": "49344eccd68122371092a4c7b62b437f0f95431c7f386575845e9f8b71b81307"
     },
     {
       "path": "CEST_Studio/app/modules/scan_helper.py",
@@ -170,8 +175,8 @@
     },
     {
       "path": "CEST_Studio/app/pages/base_page.py",
-      "size": 41140,
-      "sha256": "23c12613e9a502c60d3c9e1602d9db6ac99c69a0a25f8ad6fce54f217bee41b4"
+      "size": 42311,
+      "sha256": "47a358e69e37ab80eea155fc667b55af139a476d026c46a958346de681ec0cd3"
     },
     {
       "path": "CEST_Studio/app/theme.py",
@@ -230,8 +235,8 @@
     },
     {
       "path": "CEST_Studio/detect/rules.py",
-      "size": 6852,
-      "sha256": "1d4038a69a6bc5733bc56fdb6fc378d2cc425b8edf59a2069e9e0cffaf2179a8"
+      "size": 6914,
+      "sha256": "24b7ff701583193713cd528ca5a48884253d0a7e49ce6276150c519a0493f687"
     },
     {
       "path": "CEST_Studio/detect/scanner.py",
@@ -321,7 +326,7 @@
     {
       "path": "CEST_Studio/VERSION",
       "size": 6,
-      "sha256": "326dd5d8641f399990de42def50ac29eb4c9222601c0a0a3fc3c947dd3bec65d"
+      "sha256": "2df2bd7011e87351e2e3e296ddb7f2520270a76160f95b2d64b337167294f28c"
     },
     {
       "path": "CEST_Studio/启动.bat",
@@ -420,8 +425,8 @@
     },
     {
       "path": "cest-agent/cest_agent/agent.py",
-      "size": 47694,
-      "sha256": "2077751d97dcd271d575d58243cab03eec6a37a6912312918c4aca719b286cbb"
+      "size": 51849,
+      "sha256": "866285e99a4b2fc4bb2ed6b7e44c36f37774b2073343a9687a31c95265ef7fbb"
     },
     {
       "path": "cest-agent/cest_agent/chat.py",
@@ -440,8 +445,8 @@
     },
     {
       "path": "cest-agent/cest_agent/doctor.py",
-      "size": 9189,
-      "sha256": "63eb23a8164260bb7c453036dfa9fdf26613afb13713a9eeebf439552def3a95"
+      "size": 10250,
+      "sha256": "bdad946be5cb8f23b627bff8e52979903c41001cb9d437c2c7df0c49190580ee"
     },
     {
       "path": "cest-agent/cest_agent/freq.py",
@@ -455,18 +460,18 @@
     },
     {
       "path": "cest-agent/cest_agent/gui_page.py",
-      "size": 58961,
-      "sha256": "491f75de7fb88d6665cdd4d98fcfb1aca3173770ce5b408d0a7c87eda6e948fe"
+      "size": 77357,
+      "sha256": "f04ade7ac288744d2bef1881c7d90c3301dcf835237c95102648a657139d5b10"
     },
     {
       "path": "cest-agent/cest_agent/intent.py",
-      "size": 11767,
-      "sha256": "7ca860394de716d97b40bdcc7d00d345d3e7508b29016b9fc2d30b61faebeb82"
+      "size": 11952,
+      "sha256": "e66d5eebb8350083ed577b1473920509f26714c9bfd9ad8e63809a8489d3cb8a"
     },
     {
       "path": "cest-agent/cest_agent/layout.py",
-      "size": 13145,
-      "sha256": "9adb742a2bab852e54212715289dab4a72da323aba5c6ab38a7072f747b32c34"
+      "size": 14313,
+      "sha256": "3572c689d0b2253d26ae082af1456cf870580bfb358e49211ba66622b93282ac"
     },
     {
       "path": "cest-agent/cest_agent/paths.py",
@@ -475,13 +480,13 @@
     },
     {
       "path": "cest-agent/cest_agent/plan.py",
-      "size": 15518,
-      "sha256": "32e8a957d6faf40aa280cc2c18a9f28057f0ccd3c243388992b169461361110a"
+      "size": 15556,
+      "sha256": "ae9a34f8a53eef9eeda2a6f5aa4cce37c41d928af472c63b1f08d5b1a75177c2"
     },
     {
       "path": "cest-agent/cest_agent/report.py",
-      "size": 3666,
-      "sha256": "4eb1a01d8b12c80d60508753641278e81d9e0b9f02a93b3a2c22c34a3e561574"
+      "size": 3704,
+      "sha256": "38bf4a74b58a19e48552b4ebaa37fc70addc458b824b7fe23098f9e714deef9d"
     },
     {
       "path": "cest-agent/cest_agent/runner.py",
@@ -490,8 +495,8 @@
     },
     {
       "path": "cest-agent/cest_agent/verify.py",
-      "size": 5981,
-      "sha256": "8d54bcbfcca061d32797830488acdf3547896fc17ca73ef8c7a6ec9a56e5d9bf"
+      "size": 6657,
+      "sha256": "5d4000848db3fd524fa218fbeef73e200fe3941847d6f0bd9191065d8a3d46b2"
     }
   ]
 }

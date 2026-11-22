@@ -707,9 +707,21 @@ class ModulePage(QWidget):
         if not getattr(mod, 'chain_proj', False):
             self.lab_case.setVisible(False)
             self.case_combo.setVisible(False)
-            self.lab_res.setText(f'解析：{det.label}' if det is not None
-                                 else '解析：（先设置输入根）')
-            self.lab_res.setStyleSheet('')
+            if getattr(mod, 'proj_direct', False):
+                _cs = list(chain.list_cases(proj)) if proj else []
+                if proj:
+                    self.lab_res.setText(
+                        f'解析：直接读输出总目录（PROJ）　病例 {len(_cs)} 个'
+                        + ('（' + '、'.join(_cs[:6]) + ('…' if len(_cs) > 6 else '')
+                           + '）' if _cs else '（还没有病例）'))
+                    self.lab_res.setStyleSheet('color:#1e8449;')
+                else:
+                    self.lab_res.setText('解析：先选「输出总目录（PROJ）」')
+                    self.lab_res.setStyleSheet('color:#c0392b;')
+            else:
+                self.lab_res.setText(f'解析：{det.label}' if det is not None
+                                     else '解析：（先设置输入根）')
+                self.lab_res.setStyleSheet('')
             self.miss_label.setText('')
             self.miss_label.setVisible(False)
             self._chain_ready = True
@@ -882,6 +894,16 @@ class ModulePage(QWidget):
             w.addItems(opts)
             if keep and keep in opts:
                 w.setCurrentText(keep)
+            elif not keep and opts:
+                fn_d = getattr(self.module, 'dyn_default', None)
+                dv = ''
+                if callable(fn_d):
+                    try:
+                        dv = str(fn_d(key, opts, proj) or '')
+                    except Exception:                        # noqa: BLE001
+                        dv = ''
+                if dv and dv in opts:
+                    w.setCurrentText(dv)
             w.blockSignals(False)
 
     def _on_any_param(self, *_a):
