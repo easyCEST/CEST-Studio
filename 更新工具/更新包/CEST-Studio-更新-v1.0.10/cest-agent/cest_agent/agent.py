@@ -374,6 +374,31 @@ def _tool_ask_human(args):
                 note='已把问题抛给用户，本轮到此为止，等用户回答')
 
 
+def _tool_export_ortho(sess, args):
+    """三正交面出图（与 GUI ② 的「三视图」同源取数，不含 GUI）。"""
+    from . import ortho
+    case = str(args.get('case') or '').strip()
+    if not case:
+        return dict(ok=False, error='要出三视图得说清是哪个病例（case）')
+    if not sess.proj:
+        return dict(ok=False, error='还没设 PROJ，先用 set_project 设一个')
+    if sess.cancel():
+        return dict(ok=False, error='已取消')
+    try:
+        r = ortho.export(
+            sess.proj, case,
+            mode=str(args.get('mode') or 'LD'),
+            w=float(args.get('w') if args.get('w') is not None else 3.5),
+            ld_mode=str(args.get('ld_mode') or 'POS'),
+            use_mask=bool(args.get('use_mask', True)),
+            x=args.get('x'), y=args.get('y'), z=args.get('z'),
+            caxis=args.get('caxis'),
+            dpi=int(args.get('dpi') or 200))
+    except Exception as e:                               # noqa: BLE001
+        return dict(ok=False, error=f'{type(e).__name__}: {e}')
+    return r
+
+
 # ============================================================ 访问电脑（按权限档）
 def _g(sess):
     from . import grants
@@ -618,6 +643,43 @@ def _tool_import_masks(sess, args):
                 note='' if not lack else f'{len(lack)} 例还没掩模，需要人补画')
 
 
+def _python_forbidden(code: str) -> str:
+    """run_python 的硬拦截：不许拿它执行模块，也不许拿它翻源码。
+
+    拦截的不是「危险」，而是「走错路」——模块必须走 run_module，
+    这样产物才落在标准目录、才有产物校验、才进报告。
+    """
+    import re as _re
+    s = str(code or '')
+    rules = [
+        (r'from\s+modules\s+import|import\s+modules\b|from\s+app\.modules',
+         '不要在 run_python 里 import GUI 的模块。要跑模块请用 run_module（传 mid + params）。'),
+        (r'\.run\s*\(|PrfAnalysisModule|PrfExtractModule|PostModule|LDModule|'
+         r'DisplayModule|CompareModule|ROIModule|ReconModule|ImportModule',
+         '不要在 run_python 里直接调模块的 run()。要跑模块请用 run_module（传 mid + params）。'),
+        (r'glob\.glob\s*\([^)]*\.py|rglob\s*\([^)]*\.py|listdir.*\.py',
+         '不要用 run_python 在源码目录里搜 .py 文件。想知道模块行为请用 get_module_schema。'),
+        (r'importlib|__import__\s*\(|inspect\.getsource|open\s*\([^)]*\.py',
+         '不要用 run_python 探查模块源码。参数用 get_module_schema，状态用 get_status。'),
+        # ★ 不许预建 PROJ 骨架：目录只能由模块在自己真正产出时创建
+    ]
+    for rx, msg in rules:
+        if _re.search(rx, s):
+            return msg + '（run_python 只用于你明确要求的临时统计/核对。）'
+    # ★ 建目录拦截：代码里出现 mkdir 且同时出现 PROJ 子目录名（或 proj 变量）就拦。
+    #   目录只能由模块在真正产出时创建，不许先搭一套空骨架。
+    if _re.search(r'\b(mkdir|makedirs)\s*\(', s):
+        if _re.search(r'00_掩模|00_roi|01_重建|01_recon|02_展示|02_display|03_CEST|'
+                      r'04_逐体素|04_ld|05_PRF|06_PRF|10_对比|10_compare|日志', s):
+            return ('不许用 run_python 预先创建 PROJ 子目录。目录由模块在真正产出时'
+                    '自己创建：⓪ 导入了数据才有 01_重建，提取到掩模才有 00_掩模，'
+                    '没跑过的阶段不该有目录。要建项目结构请用 run_module(m_import)。')
+        if _re.search(r'proj|PROJ|sess\.proj|输出结果', s):
+            return ('不许用 run_python 在 PROJ 下建目录。要建项目结构请用 '
+                    'run_module(m_import)，它会按实际提取到的内容决定建哪个目录。')
+    return ''
+
+
 def _tool_run_python(sess, args):
     """跑一段 Python（同源解释器 runtime\\python.exe，cwd=PROJ）。"""
     import subprocess
@@ -631,6 +693,10 @@ def _tool_run_python(sess, args):
         return dict(ok=False, error='code 是空的')
     if len(code) > 20000:
         return dict(ok=False, error='代码太长（>20000 字符），拆成几步')
+    # ★ 硬拦截：不许用 run_python 替代模块执行，也不许拿它探源码
+    bad = _python_forbidden(code)
+    if bad:
+        return dict(ok=False, rejected=True, error=bad)
     # 跑代码前问用户（默认开）
     if g.get('confirm_python') and sess.confirm_python:
         if not sess.confirm_python(code):
@@ -712,6 +778,24 @@ TOOLS = [
             force=dict(type='boolean', description='强制重跑已完成的阶段')),
             required=['stages']))),
     dict(type='function', function=dict(
+        name='export_ortho',
+        description='出三正交面图：横断 / 冠状 / 矢状三联图 + 三张单面图，'
+                    '落盘到 02_展示\\<病例>\\<模式> <ppm>ppm_ortho\\。'
+                    '用户说「三视图」「三正交面」「正交切面」「三个面都看一下」时用它。',
+        parameters=dict(type='object', properties=dict(
+            case=dict(type='string', description='病例名'),
+            mode=dict(type='string', description='图类型 raw / ST / APTW / LD，默认 LD'),
+            w=dict(type='number', description='目标频偏 ppm，默认 3.5'),
+            ld_mode=dict(type='string', description='LD 取正/负：POS / NEG，默认 POS'),
+            use_mask=dict(type='boolean', description='用掩模压背景，默认 true'),
+            x=dict(type='integer', description='矢状面切在第几列（1 基），留空=正中'),
+            y=dict(type='integer', description='冠状面切在第几行（1 基），留空=正中'),
+            z=dict(type='integer', description='横断面切在第几层（1 基），留空=正中'),
+            caxis=dict(type='array', items=dict(type='number'),
+                       description='色标 [下限, 上限]，留空=自动取 5~95%'),
+            dpi=dict(type='integer', description='保存分辨率，默认 200')),
+            required=['case']))),
+    dict(type='function', function=dict(
         name='ask_human',
         description='信息不足或需要人决策时，问用户一句话并停下。'
                     '只在真的缺关键信息时用，不要为了确认而确认。',
@@ -777,9 +861,10 @@ TOOLS = [
             max_kb=dict(type='integer', description='最多读多少 KB，默认 64'))))),
     dict(type='function', function=dict(
         name='run_python',
-        description='在项目解释器里执行一段 Python（cwd=PROJ）。'
-                    '只有内置模块做不到时才用；能调 run_module/run_chain 就别用这个。'
-                    '★ 绝对不能修改源代码——只能调代码。',
+        description='跑一段 Python 做临时统计/核对（读 .mat 数个数、核对文件清单这种）。'
+                    '★ 不能用来跑模块（模块请用 run_module）、'
+                    '不能用来读源码或搜索 .py（模块参数请用 get_module_schema）、'
+                    '不能用来创建 PROJ 子目录（目录由模块自己按需创建）。',
         parameters=dict(type='object', properties=dict(
             code=dict(type='string', description='要执行的 Python 代码'),
             timeout=dict(type='integer', description='超时秒数，默认 120')),
@@ -787,10 +872,26 @@ TOOLS = [
 ]
 
 
-SYSTEM = """你是 CEST Studio 的数据处理智能体，代替用户操作这个软件。
+SYSTEM = """你是 CEST Studio 的操作员，代替用户**点按钮**。
 
-你能做的：查状态、读模块参数表、跑单个模块、跑整条链。
+你的唯一职责：把用户的话翻译成「跑哪个模块、用什么参数」，然后调 run_module / run_chain。
 每一阶段都有真实执行代码在跑，你只负责决定「做什么、用什么参数」。
+
+★ 你不是分析师，不做数据质量评估。以下这些**一律不要做**：
+  - 不要评价数据好不好、样本量够不够、偏置间隔规不规则、统计上可不可信
+  - 不要读源码去验证模块内部实现（不许 glob 找 .py、不许 import 模块看代码）
+  - 不要自己写脚本复现模块逻辑（run_module 能做的事，绝不用 run_python 重做）
+  - 不要给「我建议你选 1/2/3」这类多方案让用户挑；用户让你做什么就做什么
+  - 不要主动扩展任务：用户说跑 ⑥，就只跑 ⑥，不要顺手分析数据、不要顺手清理目录
+
+★ 但「看清数据是什么格式」是允许且必须做的（用户扔来一个文件夹时）：
+  - 用 list_dir 看目录长什么样、有哪些文件、什么扩展名
+  - 用 scan_path 认这属于哪种数据（原始 DICOM / S0+Z谱 / 病人目录 / PROJ / 掩模）
+  - 必要时用 run_python **读数据文件本身**（loadmat 看变量名和 shape、读 DICOM 头），
+    搞清「有哪些文件、每个文件里是什么、按什么规则组织」
+  - 这是"看数据"，不是"评数据"：可以报格式、维度、命名规律、病例怎么分；
+    不要报"数据质量好坏""样本够不够""能不能发文章"
+  - 边界：读 .mat/.dcm/.json/.txt 数据文件 = 可以；读 .py 源码 = 禁止
 
 ★ 模块 id 只有下面这些，不要猜、不要自己造名字：  m_import      ⓪ 导入重建（原始 S0 + Z 谱 → 01_重建）
   m1_recon      ① DICOM 重建
@@ -804,6 +905,12 @@ SYSTEM = """你是 CEST Studio 的数据处理智能体，代替用户操作这�
 数据链 = m_import/m1_recon/m_roi/m3_post/m4_ld/m2_display（run_chain 只收这些）
 ⑤ ⑥ ⑩ 是跨病例模块，只能 run_module 单独跑，不能进 run_chain。
 
+★ 三视图（三正交面）走 export_ortho，不是模块：
+  用户说「出三视图 / 三正交面 / 正交切面 / 三个面看一下」→ export_ortho(case, mode, w)。
+  它和 GUI ② 的三视图**同一份取数**（同一份 voxel_LD.mat / 同一套掩模口径），
+  产物落在 02_展示\<病例>\<MODE> <ppm>ppm_ortho\（合成图 + 横断/冠状/矢状 各一张）。
+  LD 三视图要求该病例 ④ 已经跑出 voxel_LD.mat；没有就如实说「先跑 ④」，不要自己造。
+
 铁律（违反会被工具直接拒绝，不要试）：
 1. 去噪掩模、器官 ROI 必须用户人工画或由用户提供。
    你永远不跑 m_roi、不用 run_python 造掩模。
@@ -812,9 +919,19 @@ SYSTEM = """你是 CEST Studio 的数据处理智能体，代替用户操作这�
 3. 频率表必须用户核对过才写入。
 4. 参数取值不确定时，先调 get_module_schema 看合法取值，不要猜。
 5. ★ 你绝对不能修改源代码。只能用 list_dir/scan_path/find_data/read_text_file 看，
-   用 run_module/run_chain 调现成的模块，必要时用 run_python 做临时计算。
+   用 run_module/run_chain 调现成的模块。
    **不许写 .py 文件、不许改 cest-gui / cest-agent 里的任何程序文件**——
    这是硬限制，即使用户把权限开到全盘也不行。要改代码就告诉用户「这需要人来改」。
+6. ★ 模块只能通过 run_module / run_chain 调用。
+   **禁止用 run_python 里 import 模块、调 mod.run()、或在源码目录里 glob 找 .py**。
+   run_python 只用于用户明确要求的临时统计/核对（读 .mat 算个数这种），
+   不能替代模块执行，也不能用来探查模块内部实现。
+7. ★ 不许用 run_python 预先创建任何 PROJ 子目录（00_掩模 / 01_重建 / 02_展示 /
+   03_CEST后处理 / 04_逐体素LD / 05 / 06 / 10_对比 / 日志 都不许手动 mkdir）。
+   目录只能由模块在**真正产出**时自己创建：⓪ 导入了 Z 谱才有 01_重建，
+   提取到掩模才有 00_掩模，没跑过的阶段不该存在目录。
+   用户给一堆原始数据让你「整理成 PROJ 格式」，正确做法是 set_project + run_module(m_import)，
+   由 ⓪ 自己建目录，不是你先 mkdir 一套空文件夹再往里放。
 
 关于找数据（用户给模糊指令时）：
 - 「我在 D 盘 XX 有原始数据」→ list_dir 看看 → find_data 定位 → scan_path 确认是什么
@@ -824,18 +941,19 @@ SYSTEM = """你是 CEST Studio 的数据处理智能体，代替用户操作这�
 - 用户说「有画好的掩模/ROI」→ find_masks → import_masks。导完复核哪些还缺。
 
 工作方式：
-- 用户说要做的事 → 先 get_status 看真实状态 → 该跑就跑，别反复确认。
+- 用户说要做的事 → 直接调 run_module / run_chain 执行，不要先长篇分析。
 - 用户说「组间」就是 m6 的 params.mode="组间"；说「均值±SD」就是 params.style="均值±SD"。
   这类字眼是参数，不是形容词，必须真的传下去。
 - 「组内 / 单个对比 / 组间」是 ⑥ 的 mode；「组内 / 组间」也是 ⑤ 的 task。
-  用户说「分析」基本都是指 ⑥。要组间分析就 run_module(m6, params 里 mode=组间)，
-  并且先确认 05_PRF提取\组间\newGroupPaths.mat 存在（get_status 能看出来）。
-- 指令明确（阶段/病例/模式都清楚）→ 直接执行。
+  用户说「分析」基本都是指 ⑥。要组间分析就 run_module(m6, params 里 mode=组间)。
+- 指令明确（阶段/病例/模式都清楚）→ 直接执行。参数名不确定就 get_module_schema 看一眼。
 - 只有在关键信息真的缺（没说哪个病例、没说组内还是组间且无法从上下文推断）时，
   才用 ask_human 问一句话。
+- 用户说「先给我个方案」时，方案只写：跑哪个模块、传哪些参数、输出落在哪。
+  不要写数据质量评价、不要写统计上的可信度讨论。
 - 同一个工具不要重复调用；已经拿到的信息不要反复查。
 - 用户问「到哪一步了」这类状态问题，get_status 调一次就够，不要逐病例刷。
-- 执行完用中文简短汇报：做了什么、结果如何、下一步。不要复述参数表。
+- 执行完用中文简短汇报：跑了什么、成功没有、产物在哪。3 行以内，不要展开分析。
 - 不要编造任何数值。所有数字只能来自工具返回。
 
 当前项目状态：
@@ -972,6 +1090,8 @@ class Session:
                                    self.confirm_freq)
         if name == 'ask_human':
             return _tool_ask_human(args)
+        if name == 'export_ortho':
+            return _tool_export_ortho(self, args)
         # ---- 访问电脑（受权限档限制）----
         if name == 'list_dir':
             return _tool_list_dir(self, args)

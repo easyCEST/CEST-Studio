@@ -201,17 +201,28 @@ def build_mode_and_caxis(d, mode, w, use_mask=True, caxis_mode='manual',
     """
     import cest_display as D
 
-    img3d, mask = D.build_mode_data(d, mode=mode, w_target=w, w_mirror=-w,
-                                     ld_mode=ld_mode, use_mask=use_mask,
-                                     verbose=verbose)
-    qsrc = np.asarray(img3d, dtype=float)
-    if use_mask and mask is not None and np.size(mask):
-        plain, _m = D.build_mode_data(d, mode=mode, w_target=w, w_mirror=-w,
-                                       ld_mode=ld_mode, use_mask=False,
-                                       verbose=False)
-        m3 = np.asarray(mask, dtype=float)
-        qsrc = (plain * (m3 > 0)) if (m3.ndim == 3 and m3.shape[:2] == plain.shape[:2]) \
-            else np.asarray(plain, dtype=float)
+    # ★ 只算一次：原来是「带掩模算一遍 + 不带掩模再算一遍」拿 qsrc，
+    #   对 224×176×32×241 这种 4D 数据等于双倍耗时/内存（点开就卡死）。
+    #   现在先算不带掩模的 plain，img3d 由 apply_mask 派生 —— 与原来逐元素等价。
+    _mask = d.get('mask')
+    _use = bool(use_mask) and (_mask is not None) and bool(np.size(_mask))
+    if _use:
+        plain, _none = D.build_mode_data(d, mode=mode, w_target=w, w_mirror=-w,
+                                         ld_mode=ld_mode, use_mask=False,
+                                         verbose=verbose)
+        mask = _mask
+        img3d = D.apply_mask(plain, mask)
+    else:
+        img3d, mask = D.build_mode_data(d, mode=mode, w_target=w, w_mirror=-w,
+                                        ld_mode=ld_mode, use_mask=use_mask,
+                                        verbose=verbose)
+        plain = img3d
+
+    m3 = None if mask is None else np.asarray(mask, dtype=float)
+    if _use and m3 is not None and m3.ndim == 3 and m3.shape[:2] == np.shape(plain)[:2]:
+        qsrc = plain * (m3 > 0)
+    else:
+        qsrc = np.asarray(plain, dtype=float)
     lay = list(layers or range(1, int(img3d.shape[2]) + 1))
     cax = caxis
     if caxis_mode == 'per_layer_5_95':
@@ -235,17 +246,22 @@ def build_freq_stack(d, mode, layer, use_mask=True, ld_mode='POS'):
     img = np.asarray(d['img_interp'], float)
     if img.ndim != 4:
         raise RuntimeError(f'数据不是 4D (X,Y,层,频)：{img.shape}')
-    if mode == 'ST':
-        src = D.process_img_interp(img)
-    elif mode == 'LD':
-        if 'voxel_ld' not in d:
+
+    # ★ 先按层切出 (X,Y,频)，再做 ST 变换：原来是「整本 process_img_interp 再切层」，
+    #   224×176×32×241 时等于多造两份 2.4GB 临时数组（点一下就卡死）。逐元素等价。
+    if mode == 'LD':
+        if d.get('voxel_ld') is None:
             raise RuntimeError('LD 展示需要 ④ 逐体素LD 的 voxel_LD.mat（先跑 ④）')
         src = np.asarray(d['voxel_ld'], float)
+        L = int(src.shape[2])
+        lay = int(np.clip(int(layer), 1, L))
+        stack = np.asarray(src, float)[:, :, lay - 1, :]
     else:
-        src = img
-    L = int(src.shape[2])
-    lay = int(np.clip(int(layer), 1, L))
-    stack = np.asarray(src, float)[:, :, lay - 1, :]                 # (X,Y,F)
+        L = int(img.shape[2])
+        lay = int(np.clip(int(layer), 1, L))
+        stack = np.asarray(img[:, :, lay - 1, :], float)
+        if mode == 'ST':
+            stack = 1.0 - np.clip(stack, 0.0, 1.0)                 # (X,Y,F)
     if use_mask and d.get('mask') is not None:
         m = np.asarray(d['mask'], float)
         ms = m if m.ndim == 2 else m[:, :, min(lay - 1, m.shape[2] - 1)]
@@ -467,6 +483,11 @@ class DisplayModule(Module):
         b_prev.setToolTip('交互式看：层览翻层 / 缩放平移 / 实时改色标 / 导出（与【开始】同一条保存路径）')
         b_prev.clicked.connect(lambda: self._open_preview(page))
         row.addWidget(b_prev)
+        b_ortho = QPushButton('打开三视图…')
+        b_ortho.setToolTip('先按频偏取出 (X,Y,Z) 三维体，再同时看横断 / 冠状 / 矢状三个方向：\n'
+                           '拖滑条或直接点图改 x/y/z，满意了导出成一张 PNG')
+        b_ortho.clicked.connect(lambda: self._open_ortho(page))
+        row.addWidget(b_ortho)
         row.addStretch(1)
         v.addLayout(row)
         pan.state = QLabel('还没准备。')
@@ -716,6 +737,100 @@ class DisplayModule(Module):
 
         dlg = MosaicViewDialog(page, d, case=case, params=p, out_dir=out,
                                on_export=_export)
+        dlg.exec()
+        page.refresh_extra()
+        page.refresh_preview(proj)
+
+    # ================================================================ 三正交面视图
+    def _prepare_light(self, p, proj, log=print):
+        """三视图专用：只读「当前频点那一帧」，不把几个 GB 的 4D 整本搬进内存。
+
+        返回 (case, d, data_path, out)；不能按帧读（老 v7 格式）时返回 None，
+        由调用方退回 _prepare（整本读，慢）。
+        """
+        import cest_display as D
+
+        src = str(p.get('src') or '').strip()
+        if not src:
+            raise RuntimeError('② 需要输入（重建结果目录，或含 img_interp 的目录/.mat）')
+        case = str(p.get('case') or '').strip() or Path(src).name
+        src_dir = self._src_dir(p, case)
+        mask_file, msrc = self._find_mask(p, proj, case, src_dir)
+        if mask_file is None:
+            raise RuntimeError(
+                '② 需要去噪掩膜：没找到 00_掩模\\<病例>\\Mask.mat\n'
+                '请先在 ⑧ 去噪掩膜 里画好/载入，或在「掩模文件」里指定。')
+        log(f'  掩模：{mask_file}（{msrc}）')
+
+        w_file = None
+        if proj and case:
+            _rd = R.find_subdir(proj, '01_recon')
+            if _rd and (Path(_rd) / case / 'w_offset.mat').exists():
+                w_file = Path(_rd) / case / 'w_offset.mat'
+
+        # ★ 优先直接找 v7.3 的重建产物（normZ.mat / ssat.mat）：能按频点读，
+        #   2.4 GB 也只取 10 MB。_ensure_data 给的 _cache/*.mat 是 v7（不能按帧读）。
+        d = D.load_display_frames(None, mask_file=mask_file, w_file=w_file,
+                                  src_dirs=[src_dir])
+        if d is None:
+            try:
+                data_path, _dsrc = self._ensure_data(p, proj, case, src_dir, mask_file, log=log)
+            except Exception:                                    # noqa: BLE001
+                return None
+            if w_file is None:
+                cand = Path(data_path).parent / 'w_offset.mat'
+                w_file = cand if cand.exists() else None
+            d = D.load_display_frames(data_path, mask_file=mask_file, w_file=w_file,
+                                      src_dirs=[src_dir])
+        if d is None:
+            return None
+        data_path = d['meta']['data_file']
+        out = self.out_dir_for(p, proj)
+        if not out:
+            raise RuntimeError('需要先选输出总目录（PROJ）')
+        log(f'  按帧读：{Path(data_path).name} {tuple(d["img_interp"].shape)}'
+            f'（只读当前频点那一帧，约 10 MB）')
+        return case, d, data_path, Path(out)
+
+    def _open_ortho(self, page):
+        """先按频偏取出 (X,Y,Z)，再同屏看横断 / 冠状 / 矢状；x/y/z 随便改，能导出。"""
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from app.dialogs.ortho_view_dialog import OrthoViewDialog
+
+        p = page.params()
+        proj = page.window.proj()
+        log = page.window.log
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        log('② 正在读取三维体（4D 大文件只读当前频点；若已跑过 ④，'
+            'voxel_LD.mat 首次要整本读，约 1 分钟）…')
+        try:
+            try:
+                light = self._prepare_light(p, proj, log=log)
+                if light is not None:
+                    case, d, data_path, out = light
+                else:
+                    log('  [提示] 这个文件不是 v7.3（不能按帧读）→ 退回整本读取，会慢一些')
+                    case, d, data_path, out = self._prepare(p, proj, log=log)
+            except Exception as e:                               # noqa: BLE001
+                log(f'② 打不开三视图：{e}')
+                QApplication.restoreOverrideCursor()
+                QMessageBox.warning(page, '打不开三视图', str(e))
+                return
+            _shape = tuple(int(v) for v in d['img_interp'].shape)
+            if len(_shape) < 4 or int(_shape[2]) < 2:
+                log(f'② 三视图需要多层数据，当前 {_shape} → 不支持')
+                QApplication.restoreOverrideCursor()
+                QMessageBox.information(
+                    page, '提示',
+                    f'三视图需要三维数据（X, Y, 层 ≥ 2）；\n当前数据形状 {_shape}，'
+                    f'层数不足，冠状面/矢状面没有意义。')
+                return
+            log(f'② 打开三视图：{case}　数据 {Path(data_path).name}　'
+                f'{_shape[0]}×{_shape[1]}×{_shape[2]}　→  {out}')
+            dlg = OrthoViewDialog(page, d, case=case, params=p, out_dir=str(out))
+        finally:
+            QApplication.restoreOverrideCursor()
         dlg.exec()
         page.refresh_extra()
         page.refresh_preview(proj)
